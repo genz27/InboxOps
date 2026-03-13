@@ -1,0 +1,254 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>InboxOps</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;800&family=Noto+Serif+SC:wght@600;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <div class="page-shell">
+        <header class="topbar panel">
+            <div class="brand-block">
+                <p class="eyebrow">InboxOps</p>
+                <h1>InboxOps</h1>
+            </div>
+            <div class="topbar-meta">
+                <div class="meta-chip">
+                    <span>当前管理员</span>
+                    <strong id="sessionLabel">未登录</strong>
+                </div>
+                <div class="meta-chip">
+                    <span>当前邮箱</span>
+                    <strong id="currentMailboxLabel">未选择</strong>
+                </div>
+                <button type="button" class="button ghost compact" id="logoutButton" hidden>退出登录</button>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <section id="authView" class="auth-view">
+                <div class="auth-card panel">
+                    <p class="eyebrow">管理员入口</p>
+                    <h2>管理员登录</h2>
+                    <form id="loginForm" class="login-form">
+                        <label class="field"><span>管理员账号</span><input type="text" name="username" required></label>
+                        <label class="field"><span>管理员密码</span><input type="password" name="password" required></label>
+                        <button type="submit" class="button primary" id="loginButton">登录后台</button>
+                    </form>
+                </div>
+            </section>
+
+            <section id="dashboardView" class="dashboard-layout" hidden>
+                
+                <aside class="mailbox-sidebar panel column-wrapper">
+                    <div class="section-head sticky-head">
+                        <div>
+                            <h2>邮箱列表</h2>
+                        </div>
+                        <div class="sidebar-actions">
+                            <button type="button" class="button ghost compact" id="testVisibleMailboxesButton">测试本页</button>
+                            <button type="button" class="button ghost compact" id="importMailboxesButton">批量导入</button>
+                            <button type="button" class="button ghost compact" id="newMailboxButton">新建</button>
+                        </div>
+                    </div>
+                    <div class="sidebar-tools">
+                        <label class="sidebar-search">
+                            <input type="text" id="mailboxSearchInput" placeholder="搜索备注、邮箱、备注信息">
+                        </label>
+                        <div class="sidebar-summary">
+                            <span id="mailboxResultInfo">0 个邮箱</span>
+                            <span id="mailboxPageInfo">第 0 / 0 页</span>
+                        </div>
+                        <div class="sidebar-bulk">
+                            <div class="sidebar-bulk-meta">
+                                <span id="selectedMailboxCount">已选 0 个</span>
+                                <div class="sidebar-bulk-inline">
+                                    <button type="button" class="button ghost compact" id="toggleVisibleMailboxesButton">本页全选</button>
+                                    <button type="button" class="button ghost compact" id="clearSelectedMailboxesButton">清空选择</button>
+                                </div>
+                            </div>
+                            <div class="sidebar-bulk-actions">
+                                <button type="button" class="button ghost compact" id="testSelectedMailboxesButton">测试选中</button>
+                                <select id="bulkPreferredMethodSelect" class="compact-select">
+                                    <option value="">切换默认方法</option>
+                                    <option value="graph_api">Graph API</option>
+                                    <option value="imap_new">新版 IMAP</option>
+                                    <option value="imap_old">旧版 IMAP</option>
+                                </select>
+                                <button type="button" class="button ghost compact" id="applyPreferredMethodButton">应用</button>
+                                <button type="button" class="button danger compact" id="deleteSelectedMailboxesButton">删除选中</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="scroll-area">
+                        <div id="mailboxList" class="mailbox-list"></div>
+                    </div>
+                    <div class="sidebar-pagination">
+                        <button type="button" class="button ghost compact" id="mailboxPrevPageButton">上一页</button>
+                        <button type="button" class="button ghost compact" id="mailboxNextPageButton">下一页</button>
+                    </div>
+                </aside>
+
+                <section class="workspace-shell column-wrapper">
+                    
+                    <div class="workspace-toolbar panel compact-panel">
+                        <label class="toolbar-search">
+                            <input type="text" id="searchInput" placeholder="搜索主题、发件人...">
+                        </label>
+                    </div>
+
+                    <section id="editorDrawer" class="editor-drawer panel" hidden>
+                        <div class="section-head">
+                            <h2 id="editorModeLabel">新增邮箱</h2>
+                            <button type="button" class="button ghost compact" id="closeEditorButton">收起</button>
+                        </div>
+                        <form id="mailboxForm" class="mailbox-form">
+                            <input type="hidden" name="mailbox_id">
+                            <label class="field"><span>备注名称</span><input type="text" name="label" required></label>
+                            <label class="field"><span>邮箱账号</span><input type="email" name="email" required></label>
+                            <label class="field span-2"><span>Client ID</span><input type="text" name="client_id" required></label>
+                            <label class="field span-2"><span>Refresh Token</span><textarea name="refresh_token" rows="2" required></textarea></label>
+                            <label class="field"><span>代理</span><input type="text" name="proxy"></label>
+                            <label class="field"><span>默认方法</span>
+                                <select name="preferred_method">
+                                    <option value="graph_api">Graph API</option>
+                                    <option value="imap_new">新版 IMAP</option>
+                                    <option value="imap_old">旧版 IMAP</option>
+                                </select>
+                            </label>
+                            <label class="field span-2"><span>备注</span><textarea name="notes" rows="2" placeholder="记录用途、代理说明或特殊备注"></textarea></label>
+                            <div class="form-actions span-2">
+                                <button type="submit" class="button primary" id="saveMailboxButton">保存</button>
+                                <button type="button" class="button ghost" id="resetMailboxButton">重置</button>
+                                <button type="button" class="button ghost" id="testMailboxButton">测试连接</button>
+                                <button type="button" class="button danger" id="deleteMailboxButton" disabled>删除</button>
+                            </div>
+                        </form>
+                    </section>
+
+                    <section id="importDrawer" class="editor-drawer panel" hidden>
+                        <div class="section-head">
+                            <div>
+                                <h2>批量导入邮箱</h2>
+                                <p class="drawer-description">每行一条，格式：邮箱----附加字段----Client ID----Refresh Token</p>
+                            </div>
+                            <button type="button" class="button ghost compact" id="closeImportButton">收起</button>
+                        </div>
+                        <form id="importForm" class="import-form">
+                            <label class="field span-2">
+                                <span>默认方法</span>
+                                <select name="preferred_method">
+                                    <option value="graph_api">Graph API</option>
+                                    <option value="imap_new">新版 IMAP</option>
+                                    <option value="imap_old">旧版 IMAP</option>
+                                </select>
+                            </label>
+                            <label class="field span-2">
+                                <span>批量文本</span>
+                                <textarea id="importSource" name="raw_text" rows="10" placeholder="TimothyRogers2718@outlook.com----pdaxxdln5604----client-id----refresh-token" required></textarea>
+                            </label>
+                            <p class="import-hint span-2">按邮箱自动去重。批次内重复邮箱保留最后一条，库内已存在邮箱会自动更新；第二段仅用于兼容导入格式，不会写入当前系统。</p>
+                            <div class="form-actions span-2">
+                                <button type="submit" class="button primary" id="submitImportButton">开始导入</button>
+                                <button type="button" class="button ghost" id="resetImportButton">清空</button>
+                            </div>
+                        </form>
+                    </section>
+
+                    <section id="overviewStrip" class="overview-strip panel compact-panel" hidden>
+                        <div id="overviewCards" class="overview-cards-mini"></div>
+                    </section>
+
+                    <section class="message-column panel column-wrapper flex-1">
+                        <div class="section-head sticky-head mini-head">
+                            <strong id="messageCount">0 封邮件</strong>
+                            <div class="toolbar-meta-group">
+                                <span id="listHint" class="toolbar-meta-text">自动刷新中</span>
+                                <span class="toolbar-meta-text">自动刷新: <span id="autoRefreshLabel">5s</span></span>
+                            </div>
+                        </div>
+                        <div class="scroll-area">
+                            <div id="messageList" class="message-list"></div>
+                        </div>
+                    </section>
+                </section>
+
+                <aside class="detail-column panel column-wrapper">
+                    <div class="scroll-area flex-column">
+                        <div id="detailEmpty" class="detail-empty">
+                            选择左侧邮件以查看详细内容。
+                        </div>
+
+                        <article id="detailCard" class="detail-card flex-column" hidden>
+                            <div class="detail-header">
+                                <h2 id="detailSubject">无主题</h2>
+                            </div>
+                            <div class="detail-meta border-bottom">
+                                <div class="meta-row"><span>发件人:</span> <strong id="detailSender">-</strong></div>
+                                <div class="meta-row"><span>收件人:</span> <strong id="detailTo">-</strong></div>
+                                <div class="meta-row"><span>时 间:</span> <strong id="detailTime">-</strong></div>
+                                <div class="meta-row"><span>消息 ID:</span> <strong id="detailMessageId">-</strong></div>
+                                <div class="meta-row">
+                                    <span id="detailMethodTag" class="method-badge">Graph API</span>
+                                    <span id="detailReadBadge" class="state-chip">未读</span>
+                                    <span id="detailAttachmentBadge" class="state-chip">无附件</span>
+                                </div>
+                            </div>
+                            <div class="form-actions border-bottom">
+                                <button type="button" class="button primary compact" id="markReadButton" disabled>标为已读</button>
+                                <button type="button" class="button ghost compact" id="markUnreadButton" disabled>标为未读</button>
+                            </div>
+                            <pre id="detailBody" class="detail-body"></pre>
+                        </article>
+                    </div>
+                </aside>
+            </section>
+        </main>
+
+        <div hidden><strong id="statusText"></strong><strong id="lastSyncLabel"></strong><strong id="currentMethodLabel"></strong></div>
+    </div>
+
+    <template id="mailboxItemTemplate">
+        <article class="mailbox-card">
+            <label class="mailbox-select">
+                <input type="checkbox" class="mailbox-select-checkbox" aria-label="选择邮箱">
+            </label>
+            <button type="button" class="mailbox-main">
+                <strong class="mailbox-item-label"></strong>
+                <p class="mailbox-item-email"></p>
+                <span class="mailbox-item-method"></span>
+                <span class="mailbox-item-status" hidden></span>
+            </button>
+            <button type="button" class="mailbox-edit button ghost compact">编辑</button>
+        </article>
+    </template>
+
+    <template id="overviewCardTemplate">
+        <button type="button" class="overview-card overview-card-mini">
+            <span class="overview-card-method"></span>
+            <strong class="overview-card-count"></strong>
+            <span class="overview-card-subject"></span>
+            <span class="overview-card-message"></span>
+        </button>
+    </template>
+
+    <template id="messageItemTemplate">
+        <button type="button" class="message-item">
+            <div class="message-item-top">
+                <strong class="message-item-sender"></strong>
+                <span class="message-item-time"></span>
+            </div>
+            <p class="message-item-subject"></p>
+            <span class="message-item-preview"></span>
+        </button>
+    </template>
+
+    <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</body>
+</html>
+
+

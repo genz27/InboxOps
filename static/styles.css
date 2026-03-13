@@ -1,0 +1,427 @@
+﻿:root {
+    --paper: oklch(0.972 0.012 86);
+    --paper-deep: oklch(0.936 0.017 86);
+    --surface: rgba(255, 255, 255, 0.9);
+    --surface-soft: rgba(255, 255, 255, 0.5);
+    --ink: oklch(0.24 0.03 255);
+    --ink-soft: oklch(0.45 0.028 252);
+    --blue: oklch(0.58 0.14 247);
+    --blue-soft: oklch(0.92 0.03 244);
+    --green: oklch(0.69 0.14 152);
+    --green-soft: oklch(0.93 0.03 154);
+    --amber: oklch(0.78 0.11 76);
+    --amber-soft: oklch(0.95 0.03 78);
+    --red: oklch(0.63 0.18 26);
+    
+    --line: rgba(0, 0, 0, 0.08);
+    --shadow-sm: 0 4px 12px rgba(0,0,0,0.03);
+    
+    --radius-lg: 16px;
+    --radius-md: 12px;
+    --radius-sm: 8px;
+    --space-md: 1rem;
+    --space-lg: 1.5rem;
+    
+    --transition: 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html, body {
+    margin: 0; padding: 0;
+    height: 100vh;
+    overflow: hidden;
+    font-family: "Noto Sans SC", sans-serif;
+    color: var(--ink);
+    background: linear-gradient(135deg, var(--paper), var(--paper-deep));
+}
+
+button, input, textarea, select { font: inherit; outline: none; border: none; }
+button { cursor: pointer; }
+
+/* 整体容器：释放最大宽度，铺满全屏 */
+.page-shell {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    padding: var(--space-md);
+    gap: var(--space-md);
+    width: 100%;
+}
+
+.topbar {
+    flex-shrink: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 1.5rem !important;
+}
+
+.main-content {
+    flex: 1;
+    min-height: 0; 
+}
+
+/* 重新分配三栏比例：邮件正文(1fr)拿到绝对主导权 */
+.dashboard-layout {
+    display: grid;
+    grid-template-columns: minmax(300px, 340px) minmax(340px, 380px) minmax(0, 1fr);
+    gap: var(--space-md);
+    height: 100%;
+}
+
+.panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+    padding: var(--space-md);
+}
+
+.compact-panel { padding: 0.8rem; }
+
+.column-wrapper {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    padding: 0; 
+}
+
+.flex-1 { flex: 1; }
+.flex-column { display: flex; flex-direction: column; height: 100%; }
+.mailbox-sidebar, .workspace-shell, .message-column, .detail-column { min-width: 0; }
+
+.sticky-head {
+    flex-shrink: 0;
+    padding: 1rem 1rem 0.5rem 1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.mini-head { padding-top: 0.5rem; }
+
+.scroll-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem;
+}
+
+/* 滚动条细化 */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 10px; }
+
+h1, h2, h3 { margin: 0; font-family: "Noto Serif SC", serif; }
+.topbar h1 { font-size: 1.4rem; }
+h2 { font-size: 1.2rem; }
+
+/* 顶部与公共元素 */
+.topbar-meta { display: flex; gap: 1rem; align-items: center; }
+.sidebar-actions { display: flex; gap: 0.5rem; align-items: center; }
+.sidebar-tools {
+    display: grid;
+    gap: 0.75rem;
+    padding: 0 1rem 0.75rem;
+}
+.sidebar-search input {
+    width: 100%;
+    background: rgba(255, 255, 255, 0.92);
+}
+.sidebar-summary {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+}
+.sidebar-pagination {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0 1rem 1rem;
+}
+.sidebar-pagination .button {
+    flex: 1;
+}
+.sidebar-bulk {
+    display: grid;
+    gap: 0.65rem;
+    padding: 0.8rem 0.9rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.72);
+}
+.sidebar-bulk-meta,
+.sidebar-bulk-actions,
+.sidebar-bulk-inline {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.sidebar-bulk-meta {
+    justify-content: space-between;
+}
+.sidebar-bulk-actions > * {
+    flex: 1 1 0;
+}
+.compact-select {
+    min-width: 0;
+    width: 100%;
+    padding: 0.35rem 0.55rem;
+    font-size: 0.8rem;
+    background: rgba(255, 255, 255, 0.92);
+}
+.meta-chip {
+    padding: 0.4rem 0.8rem;
+    background: var(--surface-soft);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--line);
+    font-size: 0.8rem;
+}
+.meta-chip span { color: var(--ink-soft); font-size: 0.7rem; display: block; }
+.meta-chip strong { display: block; }
+
+.button {
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 0.6rem 1rem;
+    font-weight: 600;
+    font-size: 0.9rem;
+    transition: all var(--transition);
+}
+.button:hover:not(:disabled) { transform: translateY(-1px); }
+.button.primary { background: var(--ink); color: white; }
+.button.ghost { background: transparent; border-color: var(--line); }
+.button.danger { color: var(--red); background: #ffebee; }
+.button.compact { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
+.button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 登录/表单 */
+.auth-view { height: 100%; display: flex; align-items: center; justify-content: center; }
+.auth-card { width: 100%; max-width: 400px; padding: 2rem; }
+.field { display: grid; gap: 0.4rem; margin-bottom: 0.8rem; }
+.field span { font-size: 0.8rem; color: var(--ink-soft); font-weight: 600; }
+.field.span-2 { grid-column: span 2; }
+input, textarea, select {
+    width: 100%; padding: 0.6rem; border: 1px solid var(--line);
+    border-radius: var(--radius-sm); background: white;
+}
+input:focus { border-color: var(--blue); }
+.mailbox-form { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1rem; margin-top: 1rem; }
+.import-form { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1rem; margin-top: 1rem; }
+.drawer-description {
+    margin: 0.3rem 0 0;
+    font-size: 0.8rem;
+    color: var(--ink-soft);
+}
+.import-hint {
+    margin: 0;
+    padding: 0.8rem 0.9rem;
+    border-radius: var(--radius-sm);
+    background: var(--blue-soft);
+    color: var(--ink);
+    font-size: 0.82rem;
+    line-height: 1.6;
+}
+
+/* 列表卡片 */
+.mailbox-list, .message-list { display: grid; gap: 0.6rem; }
+.mailbox-card, .message-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: stretch;
+    padding: 0.8rem;
+    background: white;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.2s;
+    min-width: 0;
+}
+.mailbox-card {
+    gap: 0.75rem;
+    align-items: flex-start;
+}
+.mailbox-card.is-checked {
+    background: color-mix(in oklch, white 88%, var(--blue-soft));
+    border-color: color-mix(in oklch, var(--blue) 28%, white);
+}
+.mailbox-card:hover, .message-item:hover { border-color: var(--blue-soft); }
+.mailbox-card.is-active, .message-item.is-active { border-color: var(--blue); box-shadow: 0 4px 12px rgba(92, 36, 247, 0.1); }
+.mailbox-select {
+    display: flex;
+    align-items: center;
+    padding-top: 0.15rem;
+}
+.mailbox-select-checkbox {
+    width: 1rem;
+    height: 1rem;
+    margin: 0;
+    accent-color: oklch(0.58 0.14 247);
+}
+
+.mailbox-main {
+    flex: 1;
+    min-width: 0;
+    background: none;
+    text-align: left;
+    padding: 0;
+    display: grid;
+    gap: 0.3rem;
+}
+.mailbox-item-label {
+    display: block;
+    font-size: 0.95rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.mailbox-item-email {
+    font-size: 0.75rem;
+    color: var(--ink-soft);
+    margin: 0;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.mailbox-edit { flex-shrink: 0; align-self: flex-start; }
+.compact-empty {
+    padding: 1.25rem 1rem;
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.7);
+    border: 1px dashed var(--line);
+}
+
+.mailbox-item-method, .method-badge, .state-chip, .overview-card-method {
+    display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px;
+    font-size: 0.7rem; font-weight: 600; background: var(--blue-soft); color: var(--blue);
+}
+.mailbox-item-status {
+    font-size: 0.74rem;
+    line-height: 1.45;
+    color: var(--ink-soft);
+    overflow-wrap: anywhere;
+}
+.mailbox-item-status.is-success {
+    color: oklch(0.5 0.12 152);
+}
+.mailbox-item-status.is-error {
+    color: var(--red);
+}
+.state-chip { background: var(--surface-soft); color: var(--ink-soft); border: 1px solid var(--line); }
+
+/* 迷你概览区 (横向极简排列) */
+.workspace-shell { display: flex; flex-direction: column; gap: var(--space-md); background: transparent; border: none; box-shadow: none; }
+.toolbar-search input { width: 100%; }
+.overview-cards-mini { display: flex; gap: 0.5rem; }
+.overview-card-mini {
+    flex: 1; padding: 0.6rem 0.75rem; background: white;
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+    display: grid; gap: 0.35rem;
+    text-align: left;
+    transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition);
+}
+.overview-card-mini.is-active {
+    border-color: var(--blue);
+    box-shadow: 0 6px 16px rgba(92, 36, 247, 0.12);
+}
+.overview-card-mini:hover {
+    border-color: var(--blue);
+    transform: translateY(-1px);
+}
+.overview-card-count { font-size: 1.1rem; font-family: serif; }
+.overview-card-subject, .overview-card-message {
+    color: var(--ink-soft);
+    font-size: 0.75rem;
+    line-height: 1.4;
+}
+.overview-card-subject {
+    color: var(--ink);
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.overview-card-message {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.toolbar-meta-group { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.toolbar-meta-text { font-size: 0.8rem; color: var(--ink-soft); }
+
+/* 邮件列表项 */
+.message-item { flex-direction: column; gap: 0.3rem; }
+.message-item.is-unread { border-left: 3px solid var(--blue); }
+.message-item-top { display: flex; justify-content: space-between; }
+.message-item-sender { font-size: 0.85rem; font-weight: 600; }
+.message-item-time { font-size: 0.7rem; color: var(--ink-soft); }
+.message-item-subject { margin: 0; font-size: 0.9rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.message-item-preview { font-size: 0.8rem; color: var(--ink-soft); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* ================= 邮件正文详情优化 ================= */
+.detail-empty { text-align: center; padding: 3rem; color: var(--ink-soft); }
+.detail-header { margin-bottom: 1rem; }
+.detail-header h2 { font-size: 1.6rem; line-height: 1.4; word-break: break-word; } /* 放大标题 */
+
+.detail-meta { display: flex; flex-wrap: wrap; gap: 1rem; font-size: 0.9rem; margin-bottom: 1rem; }
+.meta-row { display: flex; gap: 0.5rem; align-items: center; }
+.meta-row span { color: var(--ink-soft); }
+
+.border-bottom { padding-bottom: 1rem; border-bottom: 1px solid var(--line); margin-bottom: 1rem; }
+.form-actions { display: flex; gap: 0.5rem; }
+
+/* 核心：放大的邮件阅读区 */
+.detail-body {
+    flex: 1; /* 撑满剩余高度 */
+    background: white;
+    padding: 1.5rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--line);
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 1.05rem; /* 放大正文排版 */
+    line-height: 1.7;
+    overflow-y: auto; /* 文本过长时局部滚动 */
+}
+
+/* 屏幕较小适配 */
+@media (max-width: 1200px) {
+    .dashboard-layout { grid-template-columns: minmax(280px, 320px) minmax(300px, 340px) minmax(0, 1fr); }
+}
+
+@media (max-width: 920px) {
+    .sidebar-actions {
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
+    .sidebar-bulk-meta,
+    .sidebar-bulk-actions,
+    .sidebar-bulk-inline {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .sidebar-summary {
+        flex-direction: column;
+        gap: 0.3rem;
+    }
+    .sidebar-pagination {
+        flex-direction: column;
+    }
+    .mailbox-form,
+    .import-form {
+        grid-template-columns: 1fr;
+    }
+    .field.span-2,
+    .import-hint.span-2,
+    .form-actions.span-2 {
+        grid-column: span 1;
+    }
+}
+
