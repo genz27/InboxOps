@@ -29,6 +29,7 @@ def create_app(
     database_path: str | Path | None = None,
     admin_username: str | None = None,
     admin_password: str | None = None,
+    public_api_key: str | None = None,
 ) -> Flask:
     app = Flask(__name__)
     app.config["JSON_AS_ASCII"] = False
@@ -38,12 +39,26 @@ def create_app(
     mailbox_store = store or MailboxStore(database_path or os.getenv("MAILBOX_DB_PATH", "data/mailboxes.db"))
     admin_user = admin_username or os.getenv("MAIL_ADMIN_USERNAME", "admin")
     admin_pass = admin_password or os.getenv("MAIL_ADMIN_PASSWORD", "admin123456")
+    access_key = public_api_key if public_api_key is not None else os.getenv("INBOXOPS_API_KEY", "")
 
     def auth_required(handler: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(handler)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             if not session.get("admin_authenticated"):
                 raise MailboxError("请先登录管理员账号", code="unauthorized", status_code=401)
+            return handler(*args, **kwargs)
+
+        return wrapper
+
+    def api_key_required(handler: Callable[..., Any]) -> Callable[..., Any]:
+        @wraps(handler)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            if not access_key:
+                raise MailboxError("项目未配置访问 Key", code="api_key_not_configured", status_code=503)
+
+            provided_key = _extract_access_key_from_request()
+            if not provided_key or not hmac.compare_digest(provided_key, access_key):
+                raise MailboxError("访问 Key 无效", code="invalid_api_key", status_code=401)
             return handler(*args, **kwargs)
 
         return wrapper
@@ -379,6 +394,25 @@ def create_app(
         count = getattr(result, "returned", len(messages))
         return jsonify({"mailbox": _to_jsonable(profile), "method": query.method, "messages": _to_jsonable(messages), "count": count})
 
+    @app.post("/api/key/mailbox/messages")
+    @api_key_required
+    def mailbox_messages_by_key() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox_by_email(mailbox_store, payload)
+        query = _build_query(payload, default_method=profile.preferred_method)
+        config = _profile_to_config(profile, method=query.method)
+        result = mailbox_manager.list_messages(config, query)
+        messages = result.messages if hasattr(result, "messages") else result
+        count = getattr(result, "returned", len(messages))
+        return jsonify(
+            {
+                "mailbox": _profile_to_public_mailbox(profile),
+                "method": query.method,
+                "messages": _to_jsonable(messages),
+                "count": count,
+            }
+        )
+
     @app.post("/api/mailbox/message")
     @auth_required
     def mailbox_message() -> Any:
@@ -388,6 +422,21 @@ def create_app(
         config = _profile_to_config(profile, method=detail_request.method)
         message = mailbox_manager.get_message_detail(config, detail_request)
         return jsonify({"mailbox": _to_jsonable(profile), "message": _to_jsonable(message)})
+
+    @app.post("/api/key/mailbox/message")
+    @api_key_required
+    def mailbox_message_by_key() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox_by_email(mailbox_store, payload)
+        detail_request = _build_detail_request(payload, default_method=profile.preferred_method)
+        config = _profile_to_config(profile, method=detail_request.method)
+        message = mailbox_manager.get_message_detail(config, detail_request)
+        return jsonify(
+            {
+                "mailbox": _profile_to_public_mailbox(profile),
+                "message": _to_jsonable(message),
+            }
+        )
 
     @app.post("/api/mailbox/message/read-state")
     @auth_required
@@ -435,6 +484,14 @@ def _resolve_mailbox(store: MailboxStore, payload: dict[str, Any]) -> MailboxPro
     return _get_mailbox_or_404(store, mailbox_id)
 
 
+def _resolve_mailbox_by_email(store: MailboxStore, payload: dict[str, Any]) -> MailboxProfile:
+    email = _require_text(payload, "email", "邮箱账号不能为空")
+    mailbox = store.get_mailbox_by_email(email)
+    if not mailbox:
+        raise MailboxError("邮箱档案不存在", code="mailbox_not_found", status_code=404)
+    return mailbox
+
+
 def _get_mailbox_or_404(store: MailboxStore, mailbox_id: int) -> MailboxProfile:
     mailbox = store.get_mailbox(mailbox_id)
     if not mailbox:
@@ -450,6 +507,18 @@ def _profile_to_config(profile: MailboxProfile, *, method: str | None = None) ->
         proxy=profile.proxy,
         default_method=method or profile.preferred_method,
     )
+
+
+def _profile_to_public_mailbox(profile: MailboxProfile) -> dict[str, Any]:
+    return {
+        "id": profile.id,
+        "label": profile.label,
+        "email": profile.email,
+        "preferred_method": profile.preferred_method,
+        "notes": profile.notes,
+        "created_at": profile.created_at,
+        "updated_at": profile.updated_at,
+    }
 
 
 def _build_runtime_config_from_payload(raw: dict[str, Any]) -> tuple[MailboxConfig, str]:
@@ -610,6 +679,17 @@ def _optional_text(value: Any) -> str | None:
         raise MailboxError("请求参数类型错误", code="invalid_payload")
     cleaned = value.strip()
     return cleaned or None
+
+
+def _extract_access_key_from_request() -> str | None:
+    header_value = _optional_text(request.headers.get("X-InboxOps-Key"))
+    if header_value:
+        return header_value
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return None
+    return _optional_text(payload.get("api_key") or payload.get("key"))
 
 
 def _probe_mailbox_connection(
