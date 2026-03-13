@@ -50,6 +50,7 @@ const elements = {
     mailboxPageInfo: document.getElementById("mailboxPageInfo"),
     mailboxPrevPageButton: document.getElementById("mailboxPrevPageButton"),
     mailboxNextPageButton: document.getElementById("mailboxNextPageButton"),
+    sidebarFillState: document.getElementById("sidebarFillState"),
     selectedMailboxCount: document.getElementById("selectedMailboxCount"),
     toggleVisibleMailboxesButton: document.getElementById("toggleVisibleMailboxesButton"),
     clearSelectedMailboxesButton: document.getElementById("clearSelectedMailboxesButton"),
@@ -72,6 +73,9 @@ const elements = {
     importDrawer: document.getElementById("importDrawer"),
     importForm: document.getElementById("importForm"),
     importSource: document.getElementById("importSource"),
+    chooseImportFileButton: document.getElementById("chooseImportFileButton"),
+    importFileInput: document.getElementById("importFileInput"),
+    importFileLabel: document.getElementById("importFileLabel"),
     closeImportButton: document.getElementById("closeImportButton"),
     resetImportButton: document.getElementById("resetImportButton"),
     submitImportButton: document.getElementById("submitImportButton"),
@@ -188,6 +192,14 @@ function bindEvents() {
 
     elements.closeImportButton.addEventListener("click", () => {
         closeImportDrawer();
+    });
+
+    elements.chooseImportFileButton.addEventListener("click", () => {
+        elements.importFileInput.click();
+    });
+
+    elements.importFileInput.addEventListener("change", async (event) => {
+        await loadImportFile(event);
     });
 
     elements.mailboxForm.addEventListener("submit", async (event) => {
@@ -510,6 +522,31 @@ async function importMailboxes() {
     }
 }
 
+async function loadImportFile(event) {
+    const input = event.target;
+    const [file] = input?.files || [];
+    if (!file) {
+        setImportFileLabel("");
+        return;
+    }
+
+    try {
+        const content = await file.text();
+        const trimmed = readString(content);
+        if (!trimmed) {
+            throw new Error("所选文件为空");
+        }
+
+        elements.importSource.value = content;
+        setImportFileLabel(file.name);
+        setStatus(`已载入导入文件：${file.name}`);
+    } catch (error) {
+        input.value = "";
+        setImportFileLabel("");
+        setStatus(error.message || "读取导入文件失败", true);
+    }
+}
+
 async function loadOverview() {
     if (!ensureMailboxSelected()) {
         return;
@@ -725,6 +762,7 @@ function renderMailboxList() {
         elements.mailboxList.innerHTML = state.mailboxSearchTerm
             ? "<div class='detail-empty compact-empty'>没有匹配的邮箱档案</div>"
             : "<div class='detail-empty compact-empty'>还没有邮箱档案</div>";
+        renderSidebarFillState();
         renderMailboxPagination({
             selectedMailboxVisible: false,
         });
@@ -796,7 +834,13 @@ function renderMailboxList() {
     renderMailboxPagination({
         selectedMailboxVisible,
     });
+    renderSidebarFillState();
     renderBulkActions();
+}
+
+function renderSidebarFillState() {
+    const shouldShow = state.mailboxes.length <= 2;
+    elements.sidebarFillState.hidden = !shouldShow;
 }
 
 async function testVisibleMailboxes() {
@@ -1133,6 +1177,8 @@ function resetMailboxForm() {
 function resetImportForm() {
     elements.importForm.reset();
     elements.importForm.elements.preferred_method.value = "graph_api";
+    elements.importFileInput.value = "";
+    setImportFileLabel("");
 }
 
 function resetWorkspace({ preserveAuth = false } = {}) {
@@ -1508,6 +1554,10 @@ function formatRecipients(values) {
         return "-";
     }
     return values.slice(0, 3).join("，");
+}
+
+function setImportFileLabel(fileName) {
+    elements.importFileLabel.textContent = fileName || "支持 .txt / .csv / .tsv / .json";
 }
 
 

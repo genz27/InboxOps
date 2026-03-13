@@ -1,9 +1,13 @@
 ﻿from __future__ import annotations
 
+import csv
 import hmac
+import json
 import os
+import re
 from dataclasses import asdict, is_dataclass
 from functools import wraps
+from io import StringIO
 from pathlib import Path
 from typing import Any, Callable
 
@@ -20,6 +24,9 @@ from services.outlook_manager import (
 from services.storage import MailboxProfile, MailboxStore, MailboxStoreError
 
 MAILBOX_IMPORT_DELIMITER = "----"
+MAILBOX_IMPORT_TABULAR_DELIMITERS = ",\t;|"
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+CLIENT_ID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 
 
 def create_app(
@@ -146,8 +153,18 @@ def create_app(
         payload = request.get_json(silent=True) or {}
         raw_text = _require_text(payload, "raw_text", "批量导入文本不能为空")
         preferred_method = _normalize_method(payload.get("preferred_method") or "graph_api")
+        parsed_payloads = _parse_import_mailboxes(
+            raw_text,
+            preferred_method=preferred_method,
+            allow_missing_email=True,
+        )
+        hydrated_payloads = _hydrate_import_mailboxes_missing_email(
+            mailbox_manager,
+            parsed_payloads,
+            preferred_method=preferred_method,
+        )
         summary, mailboxes = mailbox_store.import_mailboxes(
-            _parse_import_mailboxes(raw_text, preferred_method=preferred_method)
+            hydrated_payloads
         )
         return jsonify({"summary": summary, "mailboxes": _to_jsonable(mailboxes)})
 
@@ -624,7 +641,84 @@ def _extract_mailbox_payload(raw: dict[str, Any], *, partial: bool = False) -> d
     return payload
 
 
-def _parse_import_mailboxes(raw_text: str, *, preferred_method: str) -> list[dict[str, Any]]:
+def _parse_import_mailboxes(
+    raw_text: str,
+    *,
+    preferred_method: str,
+    allow_missing_email: bool = False,
+) -> list[dict[str, Any]]:
+    content = raw_text.strip()
+    if not content:
+        raise MailboxError("批量导入文本不能为空", code="invalid_raw_text")
+
+    if content[0] in "[{":
+        return _parse_import_mailboxes_from_json(
+            content,
+            preferred_method=preferred_method,
+            allow_missing_email=allow_missing_email,
+        )
+    if MAILBOX_IMPORT_DELIMITER in content:
+        return _parse_import_mailboxes_from_delimited_lines(
+            content,
+            preferred_method=preferred_method,
+            allow_missing_email=allow_missing_email,
+        )
+    return _parse_import_mailboxes_from_tabular_text(
+        content,
+        preferred_method=preferred_method,
+        allow_missing_email=allow_missing_email,
+    )
+
+
+def _parse_import_mailboxes_from_json(
+    raw_text: str,
+    *,
+    preferred_method: str,
+    allow_missing_email: bool = False,
+) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError as error:
+        raise MailboxError(
+            f"JSON 解析失败：第 {error.lineno} 行第 {error.colno} 列附近格式不正确",
+            code="invalid_import_line",
+        ) from error
+
+    if isinstance(parsed, dict):
+        records: Any = parsed.get("mailboxes")
+        if records is None:
+            records = parsed.get("items")
+        if records is None:
+            records = [parsed]
+    else:
+        records = parsed
+
+    if not isinstance(records, list):
+        raise MailboxError("JSON 导入内容必须是对象数组", code="invalid_import_line")
+
+    payloads = [
+        _normalize_import_mailbox_record(
+            record,
+            preferred_method=preferred_method,
+            row_number=index,
+            allow_missing_email=allow_missing_email,
+        )
+        for index, record in enumerate(records, start=1)
+        if isinstance(record, dict)
+    ]
+    if len(payloads) != len(records):
+        raise MailboxError("JSON 导入的每一项都必须是对象", code="invalid_import_line")
+    if not payloads:
+        raise MailboxError("批量导入文本不能为空", code="invalid_raw_text")
+    return payloads
+
+
+def _parse_import_mailboxes_from_delimited_lines(
+    raw_text: str,
+    *,
+    preferred_method: str,
+    allow_missing_email: bool = False,
+) -> list[dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
 
     for line_number, raw_line in enumerate(raw_text.splitlines(), start=1):
@@ -632,26 +726,401 @@ def _parse_import_mailboxes(raw_text: str, *, preferred_method: str) -> list[dic
         if not line:
             continue
 
-        parts = [part.strip() for part in line.split(MAILBOX_IMPORT_DELIMITER, 3)]
-        if len(parts) != 4 or not all(parts):
-            raise MailboxError(
-                f"第 {line_number} 行格式错误，应为 邮箱----附加字段----Client ID----Refresh Token",
-                code="invalid_import_line",
-            )
-
-        email, _ignored_field, client_id, refresh_token = parts
         payloads.append(
-            {
-                "email": email,
-                "client_id": client_id,
-                "refresh_token": refresh_token,
-                "preferred_method": preferred_method,
-            }
+            _parse_delimited_import_record(
+                line,
+                preferred_method=preferred_method,
+                row_number=line_number,
+                allow_missing_email=allow_missing_email,
+            )
         )
 
     if not payloads:
         raise MailboxError("批量导入文本不能为空", code="invalid_raw_text")
     return payloads
+
+
+def _parse_delimited_import_record(
+    line: str,
+    *,
+    preferred_method: str,
+    row_number: int,
+    allow_missing_email: bool = False,
+) -> dict[str, Any]:
+    parts = [part.strip() for part in line.split(MAILBOX_IMPORT_DELIMITER) if part.strip()]
+    if len(parts) == 2:
+        if allow_missing_email and not any(_looks_like_email(part) for part in parts):
+            client_id, refresh_token = _resolve_client_and_refresh_values(parts)
+            return _normalize_import_mailbox_record(
+                {
+                    "client_id": client_id,
+                    "refresh_token": refresh_token,
+                },
+                preferred_method=preferred_method,
+                row_number=row_number,
+                allow_missing_email=True,
+            )
+        raise MailboxError(
+            f"第 {row_number} 行格式错误，若只传两段内容，必须是 client_id 和 refresh_token",
+            code="invalid_import_line",
+        )
+    if len(parts) < 3 or len(parts) > 4:
+        raise MailboxError(
+            (
+                f"第 {row_number} 行格式错误，支持 email----client_id----refresh_token、"
+                "email----附加字段----client_id----refresh_token，"
+                "也支持 key=value 写法或包含邮箱时的灵活顺序"
+            ),
+            code="invalid_import_line",
+        )
+
+    keyed_record: dict[str, str] = {}
+    anonymous_parts: list[str] = []
+    for part in parts:
+        parsed_segment = _parse_import_keyed_segment(part)
+        if parsed_segment:
+            field_name, value = parsed_segment
+            keyed_record[field_name] = value
+        else:
+            anonymous_parts.append(part)
+
+    if not keyed_record and len(parts) == 3 and _looks_like_email(parts[0]):
+        return _normalize_import_mailbox_record(
+            {
+                "email": parts[0],
+                "client_id": parts[1],
+                "refresh_token": parts[2],
+            },
+            preferred_method=preferred_method,
+            row_number=row_number,
+            allow_missing_email=allow_missing_email,
+        )
+
+    if not keyed_record and len(parts) == 4 and _looks_like_email(parts[0]):
+        return _normalize_import_mailbox_record(
+            {
+                "email": parts[0],
+                "client_id": parts[2],
+                "refresh_token": parts[3],
+            },
+            preferred_method=preferred_method,
+            row_number=row_number,
+            allow_missing_email=allow_missing_email,
+        )
+
+    email_candidates = [value for value in anonymous_parts if _looks_like_email(value)]
+    if "email" not in keyed_record and len(email_candidates) == 1:
+        keyed_record["email"] = email_candidates[0]
+        anonymous_parts.remove(email_candidates[0])
+
+    method_candidates = [value for value in anonymous_parts if _looks_like_method(value)]
+    if "preferred_method" not in keyed_record and len(method_candidates) == 1:
+        keyed_record["preferred_method"] = method_candidates[0]
+        anonymous_parts.remove(method_candidates[0])
+
+    missing_required_fields = [
+        field_name
+        for field_name in ("email", "client_id", "refresh_token")
+        if field_name not in keyed_record
+    ]
+
+    if not keyed_record.get("email") and not allow_missing_email:
+        raise MailboxError(
+            f"第 {row_number} 行缺少邮箱账号，导入至少需要 email、client_id、refresh_token",
+            code="invalid_import_line",
+        )
+
+    if missing_required_fields == ["client_id", "refresh_token"] and len(anonymous_parts) == 2:
+        client_id, refresh_token = _resolve_client_and_refresh_values(anonymous_parts)
+        keyed_record["client_id"] = client_id
+        keyed_record["refresh_token"] = refresh_token
+    elif len(missing_required_fields) == 1 and len(anonymous_parts) == 1:
+        keyed_record[missing_required_fields[0]] = anonymous_parts[0]
+    elif len(missing_required_fields) == 2 and len(anonymous_parts) == 3:
+        client_id, refresh_token = _resolve_client_and_refresh_values(anonymous_parts[-2:])
+        keyed_record["client_id"] = client_id
+        keyed_record["refresh_token"] = refresh_token
+    elif anonymous_parts and not keyed_record.get("client_id") and not keyed_record.get("refresh_token"):
+        client_id, refresh_token = _resolve_client_and_refresh_values(anonymous_parts[-2:])
+        keyed_record["client_id"] = client_id
+        keyed_record["refresh_token"] = refresh_token
+
+    return _normalize_import_mailbox_record(
+        keyed_record,
+        preferred_method=preferred_method,
+        row_number=row_number,
+        allow_missing_email=allow_missing_email,
+    )
+
+
+def _parse_import_keyed_segment(segment: str) -> tuple[str, str] | None:
+    for delimiter in ("=", ":", "："):
+        if delimiter not in segment:
+            continue
+        raw_key, raw_value = segment.split(delimiter, 1)
+        field_name = _resolve_import_field_name(raw_key)
+        if field_name and raw_value.strip():
+            return field_name, raw_value.strip()
+    return None
+
+
+def _resolve_client_and_refresh_values(values: list[str]) -> tuple[str, str]:
+    if len(values) != 2:
+        raise MailboxError("导入记录缺少 Client ID 或 Refresh Token", code="invalid_import_line")
+
+    first, second = values
+    if _looks_like_client_id(first) and not _looks_like_client_id(second):
+        return first, second
+    if _looks_like_client_id(second) and not _looks_like_client_id(first):
+        return second, first
+    if _looks_like_refresh_token(first) and not _looks_like_refresh_token(second):
+        return second, first
+    if _looks_like_refresh_token(second) and not _looks_like_refresh_token(first):
+        return first, second
+    return first, second
+
+
+def _parse_import_mailboxes_from_tabular_text(
+    raw_text: str,
+    *,
+    preferred_method: str,
+    allow_missing_email: bool = False,
+) -> list[dict[str, Any]]:
+    reader = csv.reader(StringIO(raw_text), delimiter=_detect_tabular_import_delimiter(raw_text))
+    rows = [[cell.strip() for cell in row] for row in reader if any(cell.strip() for cell in row)]
+    if not rows:
+        raise MailboxError("批量导入文本不能为空", code="invalid_raw_text")
+
+    headers = rows[0] if _looks_like_import_header(rows[0]) else None
+    start_index = 2 if headers else 1
+    data_rows = rows[1:] if headers else rows
+
+    payloads: list[dict[str, Any]] = []
+    for offset, row in enumerate(data_rows, start=start_index):
+        if headers:
+            if len(row) != len(headers):
+                raise MailboxError(f"第 {offset} 行列数与表头不一致", code="invalid_import_line")
+            raw_record = {
+                field_name: value
+                for header, value in zip(headers, row)
+                if (field_name := _resolve_import_field_name(header))
+            }
+        else:
+            if len(row) == 3 and all(row):
+                if allow_missing_email and not any(_looks_like_email(value) for value in row):
+                    client_id, refresh_token = _resolve_client_and_refresh_values([row[0], row[1]])
+                    raw_record = {
+                        "client_id": client_id,
+                        "refresh_token": refresh_token,
+                        "preferred_method": row[2] if _looks_like_method(row[2]) else None,
+                    }
+                else:
+                    raw_record = {
+                        "email": row[0],
+                        "client_id": row[1],
+                        "refresh_token": row[2],
+                    }
+            elif len(row) == 2 and all(row) and allow_missing_email and not any(_looks_like_email(value) for value in row):
+                client_id, refresh_token = _resolve_client_and_refresh_values(row)
+                raw_record = {
+                    "client_id": client_id,
+                    "refresh_token": refresh_token,
+                }
+            elif len(row) == 4 and all(row):
+                raw_record = {
+                    "email": row[0],
+                    "client_id": row[2],
+                    "refresh_token": row[3],
+                }
+            else:
+                raise MailboxError(
+                    (
+                        f"第 {offset} 行格式错误，CSV/TSV 无表头时请使用 "
+                        "邮箱,Client ID,Refresh Token 或 "
+                        "邮箱,附加字段,Client ID,Refresh Token"
+                    ),
+                    code="invalid_import_line",
+                )
+
+        payloads.append(
+            _normalize_import_mailbox_record(
+                raw_record,
+                preferred_method=preferred_method,
+                row_number=offset,
+                allow_missing_email=allow_missing_email,
+            )
+        )
+
+    if not payloads:
+        raise MailboxError("批量导入文本不能为空", code="invalid_raw_text")
+    return payloads
+
+
+def _detect_tabular_import_delimiter(raw_text: str) -> str:
+    sample = "\n".join(line for line in raw_text.splitlines() if line.strip()) or raw_text
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=MAILBOX_IMPORT_TABULAR_DELIMITERS)
+        delimiter = getattr(dialect, "delimiter", "")
+        if delimiter in MAILBOX_IMPORT_TABULAR_DELIMITERS:
+            return delimiter
+    except csv.Error:
+        pass
+
+    delimiter = max(
+        MAILBOX_IMPORT_TABULAR_DELIMITERS,
+        key=lambda current: sum(current in line for line in raw_text.splitlines()),
+    )
+    if delimiter and delimiter in raw_text:
+        return delimiter
+    raise MailboxError(
+        "批量导入格式不正确，支持 JSON、CSV/TSV 或 ---- 分隔文本",
+        code="invalid_import_line",
+    )
+
+
+def _looks_like_import_header(row: list[str]) -> bool:
+    resolved_fields = {_resolve_import_field_name(value) for value in row}
+    return {"client_id", "refresh_token"}.issubset(resolved_fields)
+
+
+def _hydrate_import_mailboxes_missing_email(
+    manager: MailboxManager,
+    payloads: list[dict[str, Any]],
+    *,
+    preferred_method: str,
+) -> list[dict[str, Any]]:
+    hydrated_payloads: list[dict[str, Any]] = []
+    for index, payload in enumerate(payloads, start=1):
+        email = _optional_text(payload.get("email"))
+        if email:
+            hydrated_payloads.append(payload)
+            continue
+
+        client_id = _optional_text(payload.get("client_id"))
+        refresh_token = _optional_text(payload.get("refresh_token"))
+        proxy = _optional_text(payload.get("proxy"))
+        if not client_id or not refresh_token:
+            raise MailboxError(
+                f"第 {index} 条记录缺少 Client ID 或 Refresh Token，无法自动补全邮箱",
+                code="invalid_import_line",
+            )
+
+        resolved_email = manager.resolve_mailbox_email(
+            client_id=client_id,
+            refresh_token=refresh_token,
+            proxy=proxy,
+        )
+        hydrated_payloads.append(
+            {
+                **payload,
+                "email": resolved_email,
+                "preferred_method": payload.get("preferred_method") or preferred_method,
+            }
+        )
+    return hydrated_payloads
+
+
+def _normalize_import_mailbox_record(
+    raw: dict[str, Any],
+    *,
+    preferred_method: str,
+    row_number: int,
+    allow_missing_email: bool = False,
+) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise MailboxError(f"第 {row_number} 条记录必须是对象", code="invalid_import_line")
+
+    normalized_raw = _canonicalize_import_record(raw)
+    email = _optional_text(normalized_raw.get("email"))
+    client_id = _optional_text(normalized_raw.get("client_id"))
+    refresh_token = _optional_text(normalized_raw.get("refresh_token"))
+    method_value = normalized_raw.get("preferred_method")
+
+    if not email and not allow_missing_email:
+        raise MailboxError(f"第 {row_number} 条记录缺少邮箱账号", code="invalid_import_line")
+    if not client_id:
+        raise MailboxError(f"第 {row_number} 条记录缺少 Client ID", code="invalid_import_line")
+    if not refresh_token:
+        raise MailboxError(f"第 {row_number} 条记录缺少 Refresh Token", code="invalid_import_line")
+
+    return {
+        "email": email,
+        "client_id": client_id,
+        "refresh_token": refresh_token,
+        "preferred_method": _normalize_method(method_value or preferred_method),
+    }
+
+
+def _canonicalize_import_record(raw: dict[str, Any]) -> dict[str, Any]:
+    normalized_raw: dict[str, Any] = {}
+    for key, value in raw.items():
+        if isinstance(key, str):
+            field_name = _resolve_import_field_name(key)
+            normalized_raw[field_name or key] = value
+        else:
+            normalized_raw[key] = value
+    return normalized_raw
+
+
+def _resolve_import_field_name(value: str) -> str | None:
+    normalized = (
+        value.strip()
+        .casefold()
+        .replace(" ", "")
+        .replace("_", "")
+        .replace("-", "")
+        .replace(".", "")
+        .replace("/", "")
+        .replace("：", "")
+        .replace(":", "")
+    )
+    return {
+        "email": "email",
+        "mail": "email",
+        "mailbox": "email",
+        "account": "email",
+        "邮箱": "email",
+        "邮箱账号": "email",
+        "邮箱地址": "email",
+        "clientid": "client_id",
+        "clinetid": "client_id",
+        "client": "client_id",
+        "cid": "client_id",
+        "应用id": "client_id",
+        "refreshtoken": "refresh_token",
+        "refresh": "refresh_token",
+        "token": "refresh_token",
+        "rt": "refresh_token",
+        "preferredmethod": "preferred_method",
+        "method": "preferred_method",
+        "默认方法": "preferred_method",
+    }.get(normalized)
+
+
+def _looks_like_email(value: str) -> bool:
+    return bool(EMAIL_PATTERN.match(value.strip()))
+
+
+def _looks_like_client_id(value: str) -> bool:
+    cleaned = value.strip()
+    if CLIENT_ID_PATTERN.match(cleaned):
+        return True
+    return bool(cleaned) and len(cleaned) <= 80 and all(char.isalnum() or char in "-_" for char in cleaned)
+
+
+def _looks_like_refresh_token(value: str) -> bool:
+    cleaned = value.strip()
+    if not cleaned:
+        return False
+    if cleaned.startswith("M."):
+        return True
+    punctuation_count = sum(char in ".*!_-$=" for char in cleaned)
+    return len(cleaned) >= 24 and punctuation_count >= 1
+
+
+def _looks_like_method(value: str) -> bool:
+    cleaned = value.strip()
+    return cleaned in {"graph_api", "graph", "imap_new", "imap_old"}
 
 
 def _normalize_method(value: Any) -> str:

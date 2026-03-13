@@ -6,8 +6,16 @@ from services.storage import MailboxStore
 
 
 class RecordingManager:
-    def __init__(self, *, fail_emails: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        fail_emails: set[str] | None = None,
+        resolved_emails: dict[tuple[str, str], str] | None = None,
+        resolve_email_error: str | None = None,
+    ) -> None:
         self.fail_emails = fail_emails or set()
+        self.resolved_emails = resolved_emails or {}
+        self.resolve_email_error = resolve_email_error
         self.calls: list[tuple[object, object]] = []
         self.detail_calls: list[tuple[object, object]] = []
 
@@ -59,6 +67,14 @@ class RecordingManager:
             headers={},
             conversation_id="conv-1",
         )
+
+    def resolve_mailbox_email(self, *, client_id: str, refresh_token: str, proxy: str | None = None) -> str:
+        if self.resolve_email_error:
+            raise MailboxError(self.resolve_email_error)
+        resolved = self.resolved_emails.get((client_id, refresh_token))
+        if not resolved:
+            raise MailboxError("无法从授权信息中解析邮箱账号")
+        return resolved
 
 
 def build_client(
@@ -359,6 +375,247 @@ def test_batch_delete_mailboxes_returns_partial_failures(tmp_path) -> None:
     assert payload["results"][2]["message"] == "邮箱档案不存在"
     assert store.get_mailbox(mailbox_a.id) is None
     assert store.get_mailbox(mailbox_b.id) is None
+
+
+def test_import_mailboxes_accepts_legacy_delimited_text(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    manager = RecordingManager()
+    client = build_client(store, manager)
+
+    response = client.post(
+        "/api/mailboxes/import",
+        json={
+            "raw_text": "legacy@example.com----reserved----legacy-client----legacy-token",
+            "preferred_method": "graph_api",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["summary"] == {
+        "processed": 1,
+        "created": 1,
+        "updated": 0,
+        "deduplicated": 0,
+    }
+    mailbox = store.get_mailbox_by_email("legacy@example.com")
+    assert mailbox is not None
+    assert mailbox.client_id == "legacy-client"
+    assert mailbox.refresh_token == "legacy-token"
+    assert mailbox.preferred_method == "graph_api"
+
+
+def test_import_mailboxes_accepts_compact_delimited_text(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    manager = RecordingManager()
+    client = build_client(store, manager)
+
+    response = client.post(
+        "/api/mailboxes/import",
+        json={
+            "raw_text": "compact@example.com----compact-client----compact-token",
+            "preferred_method": "imap_new",
+        },
+    )
+
+    assert response.status_code == 200
+    mailbox = store.get_mailbox_by_email("compact@example.com")
+    assert mailbox is not None
+    assert mailbox.client_id == "compact-client"
+    assert mailbox.refresh_token == "compact-token"
+    assert mailbox.preferred_method == "imap_new"
+
+
+def test_import_mailboxes_accepts_reordered_delimited_text(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    manager = RecordingManager()
+    client = build_client(store, manager)
+
+    response = client.post(
+        "/api/mailboxes/import",
+        json={
+            "raw_text": (
+                "11111111-1111-1111-1111-111111111111"
+                "----M.C550_BAY.0.U.-example_refresh_token_value!"
+                "----reorder@example.com"
+            ),
+            "preferred_method": "graph_api",
+        },
+    )
+
+    assert response.status_code == 200
+    mailbox = store.get_mailbox_by_email("reorder@example.com")
+    assert mailbox is not None
+    assert mailbox.client_id == "11111111-1111-1111-1111-111111111111"
+    assert mailbox.refresh_token == "M.C550_BAY.0.U.-example_refresh_token_value!"
+
+
+def test_import_mailboxes_accepts_keyed_delimited_text(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    manager = RecordingManager()
+    client = build_client(store, manager)
+
+    response = client.post(
+        "/api/mailboxes/import",
+        json={
+            "raw_text": (
+                "rt=M.C550_BAY.0.U.-keyed_refresh_token!"
+                "----email=keyed@example.com"
+                "----clinetid=22222222-2222-2222-2222-222222222222"
+                "----method=imap_old"
+            ),
+            "preferred_method": "graph_api",
+        },
+    )
+
+    assert response.status_code == 200
+    mailbox = store.get_mailbox_by_email("keyed@example.com")
+    assert mailbox is not None
+    assert mailbox.client_id == "22222222-2222-2222-2222-222222222222"
+    assert mailbox.refresh_token == "M.C550_BAY.0.U.-keyed_refresh_token!"
+    assert mailbox.preferred_method == "imap_old"
+
+
+def test_import_mailboxes_accepts_csv_with_header(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    manager = RecordingManager()
+    client = build_client(store, manager)
+
+    response = client.post(
+        "/api/mailboxes/import",
+        json={
+            "raw_text": (
+                "邮箱账号,Client ID,Refresh Token,默认方法\n"
+                "csv@example.com,csv-client,csv-token,imap_old"
+            ),
+            "preferred_method": "graph_api",
+        },
+    )
+
+    assert response.status_code == 200
+    mailbox = store.get_mailbox_by_email("csv@example.com")
+    assert mailbox is not None
+    assert mailbox.client_id == "csv-client"
+    assert mailbox.refresh_token == "csv-token"
+    assert mailbox.preferred_method == "imap_old"
+
+
+def test_import_mailboxes_accepts_csv_without_email_column(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    manager = RecordingManager(
+        resolved_emails={
+            (
+                "33333333-3333-3333-3333-333333333333",
+                "M.C550_BAY.0.U.-csv_missing_email!",
+            ): "csv-resolved@example.com"
+        }
+    )
+    client = build_client(store, manager)
+
+    response = client.post(
+        "/api/mailboxes/import",
+        json={
+            "raw_text": (
+                "client_id,refresh_token\n"
+                "33333333-3333-3333-3333-333333333333,M.C550_BAY.0.U.-csv_missing_email!"
+            ),
+            "preferred_method": "graph_api",
+        },
+    )
+
+    assert response.status_code == 200
+    mailbox = store.get_mailbox_by_email("csv-resolved@example.com")
+    assert mailbox is not None
+    assert mailbox.client_id == "33333333-3333-3333-3333-333333333333"
+    assert mailbox.refresh_token == "M.C550_BAY.0.U.-csv_missing_email!"
+
+
+def test_import_mailboxes_accepts_json_array(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    manager = RecordingManager()
+    client = build_client(store, manager)
+
+    response = client.post(
+        "/api/mailboxes/import",
+        json={
+            "raw_text": (
+                '[{"email":"json-a@example.com","client_id":"json-client-a","refresh_token":"json-token-a"},'
+                '{"email":"json-b@example.com","client_id":"json-client-b","refresh_token":"json-token-b","preferred_method":"imap_new"}]'
+            ),
+            "preferred_method": "graph_api",
+        },
+    )
+
+    assert response.status_code == 200
+    mailbox_a = store.get_mailbox_by_email("json-a@example.com")
+    mailbox_b = store.get_mailbox_by_email("json-b@example.com")
+    assert mailbox_a is not None
+    assert mailbox_b is not None
+    assert mailbox_a.preferred_method == "graph_api"
+    assert mailbox_b.preferred_method == "imap_new"
+
+
+def test_import_mailboxes_rejects_invalid_tabular_row(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    manager = RecordingManager()
+    client = build_client(store, manager)
+
+    response = client.post(
+        "/api/mailboxes/import",
+        json={
+            "raw_text": "broken@example.com,missing-token",
+            "preferred_method": "graph_api",
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert "CSV/TSV" in payload["error"]["message"]
+
+
+def test_import_mailboxes_resolves_email_when_missing(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    manager = RecordingManager(
+        resolved_emails={
+            (
+                "11111111-1111-1111-1111-111111111111",
+                "M.C550_BAY.0.U.-missing_email!",
+            ): "resolved@example.com"
+        }
+    )
+    client = build_client(store, manager)
+
+    response = client.post(
+        "/api/mailboxes/import",
+        json={
+            "raw_text": "11111111-1111-1111-1111-111111111111----M.C550_BAY.0.U.-missing_email!",
+            "preferred_method": "graph_api",
+        },
+    )
+
+    assert response.status_code == 200
+    mailbox = store.get_mailbox_by_email("resolved@example.com")
+    assert mailbox is not None
+    assert mailbox.client_id == "11111111-1111-1111-1111-111111111111"
+    assert mailbox.refresh_token == "M.C550_BAY.0.U.-missing_email!"
+
+
+def test_import_mailboxes_rejects_when_missing_email_cannot_be_resolved(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    manager = RecordingManager(resolve_email_error="无法自动解析邮箱账号")
+    client = build_client(store, manager)
+
+    response = client.post(
+        "/api/mailboxes/import",
+        json={
+            "raw_text": "11111111-1111-1111-1111-111111111111----M.C550_BAY.0.U.-missing_email!",
+            "preferred_method": "graph_api",
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert "无法自动解析邮箱账号" in payload["error"]["message"]
 
 
 def test_key_mailbox_messages_returns_public_mailbox_and_messages(tmp_path) -> None:

@@ -86,6 +86,22 @@
                     </div>
                     <div class="scroll-area">
                         <div id="mailboxList" class="mailbox-list"></div>
+                        <div id="sidebarFillState" class="sidebar-fill-state" hidden>
+                            <article class="sidebar-fill-card">
+                                <span class="sidebar-fill-eyebrow">侧边辅助</span>
+                                <strong>当前结果较少</strong>
+                                <p>这里不再留空白，改成显示下一步操作提示。你可以继续新建邮箱，或直接导入多种格式的数据。</p>
+                            </article>
+                            <article class="sidebar-fill-card sidebar-fill-card--muted">
+                                <span class="sidebar-fill-eyebrow">支持格式</span>
+                                <div class="format-badges" aria-hidden="true">
+                                    <span class="format-badge">JSON</span>
+                                    <span class="format-badge">CSV</span>
+                                    <span class="format-badge">TSV</span>
+                                    <span class="format-badge">----</span>
+                                </div>
+                            </article>
+                        </div>
                     </div>
                     <div class="sidebar-pagination">
                         <button type="button" class="button ghost compact" id="mailboxPrevPageButton">上一页</button>
@@ -102,44 +118,52 @@
                     </div>
 
                     <section id="editorDrawer" class="editor-drawer panel" hidden>
-                        <div class="section-head">
-                            <h2 id="editorModeLabel">新增邮箱</h2>
+                        <div class="section-head drawer-head">
+                            <div class="drawer-copy">
+                                <h2 id="editorModeLabel">新增邮箱</h2>
+                                <p class="drawer-description">常用字段优先展示，按钮会根据宽度自动换列，不再挤压成竖排。</p>
+                            </div>
                             <button type="button" class="button ghost compact" id="closeEditorButton">收起</button>
                         </div>
                         <form id="mailboxForm" class="mailbox-form">
                             <input type="hidden" name="mailbox_id">
-                            <label class="field"><span>备注名称</span><input type="text" name="label" required></label>
-                            <label class="field"><span>邮箱账号</span><input type="email" name="email" required></label>
-                            <label class="field span-2"><span>Client ID</span><input type="text" name="client_id" required></label>
-                            <label class="field span-2"><span>Refresh Token</span><textarea name="refresh_token" rows="2" required></textarea></label>
-                            <label class="field"><span>代理</span><input type="text" name="proxy"></label>
-                            <label class="field"><span>默认方法</span>
+                            <label class="field field--half"><span>备注名称</span><input type="text" name="label" required></label>
+                            <label class="field field--half"><span>邮箱账号</span><input type="email" name="email" required></label>
+                            <label class="field field--full"><span>Client ID</span><input type="text" name="client_id" required></label>
+                            <label class="field field--full"><span>Refresh Token</span><textarea name="refresh_token" rows="3" required></textarea></label>
+                            <label class="field field--half"><span>代理</span><input type="text" name="proxy"></label>
+                            <label class="field field--half"><span>默认方法</span>
                                 <select name="preferred_method">
                                     <option value="graph_api">Graph API</option>
                                     <option value="imap_new">新版 IMAP</option>
                                     <option value="imap_old">旧版 IMAP</option>
                                 </select>
                             </label>
-                            <label class="field span-2"><span>备注</span><textarea name="notes" rows="2" placeholder="记录用途、代理说明或特殊备注"></textarea></label>
-                            <div class="form-actions span-2">
-                                <button type="submit" class="button primary" id="saveMailboxButton">保存</button>
-                                <button type="button" class="button ghost" id="resetMailboxButton">重置</button>
-                                <button type="button" class="button ghost" id="testMailboxButton">测试连接</button>
-                                <button type="button" class="button danger" id="deleteMailboxButton" disabled>删除</button>
+                            <label class="field field--full"><span>备注</span><textarea name="notes" rows="3" placeholder="记录用途、代理说明或特殊备注"></textarea></label>
+                            <div class="form-actions form-actions--editor field--full">
+                                <button type="submit" class="button primary compact" id="saveMailboxButton">保存</button>
+                                <button type="button" class="button ghost compact" id="resetMailboxButton">重置</button>
+                                <button type="button" class="button ghost compact" id="testMailboxButton">测试连接</button>
+                                <button type="button" class="button danger compact" id="deleteMailboxButton" disabled>删除</button>
                             </div>
                         </form>
                     </section>
 
                     <section id="importDrawer" class="editor-drawer panel" hidden>
-                        <div class="section-head">
-                            <div>
+                        <div class="section-head drawer-head">
+                            <div class="drawer-copy">
                                 <h2>批量导入邮箱</h2>
-                                <p class="drawer-description">每行一条，格式：邮箱----附加字段----Client ID----Refresh Token</p>
+                                <p class="drawer-description">支持粘贴或载入 JSON、CSV、TSV，以及更灵活的 <code>----</code> 分隔文本；缺少邮箱时会尝试自动解析并回填。</p>
+                                <div class="format-badges" aria-hidden="true">
+                                    <span class="format-badge">JSON 数组</span>
+                                    <span class="format-badge">CSV / TSV</span>
+                                    <span class="format-badge">旧版 ----</span>
+                                </div>
                             </div>
                             <button type="button" class="button ghost compact" id="closeImportButton">收起</button>
                         </div>
                         <form id="importForm" class="import-form">
-                            <label class="field span-2">
+                            <label class="field field--full">
                                 <span>默认方法</span>
                                 <select name="preferred_method">
                                     <option value="graph_api">Graph API</option>
@@ -147,14 +171,47 @@
                                     <option value="imap_old">旧版 IMAP</option>
                                 </select>
                             </label>
-                            <label class="field span-2">
+                            <div class="import-toolbar field--full">
+                                <button type="button" class="button ghost compact" id="chooseImportFileButton">载入文件</button>
+                                <input
+                                    type="file"
+                                    id="importFileInput"
+                                    accept=".txt,.csv,.tsv,.json,application/json,text/plain,text/csv"
+                                >
+                                <span id="importFileLabel" class="import-file-label">支持 .txt / .csv / .tsv / .json</span>
+                            </div>
+                            <div class="import-format-grid field--full">
+                                <article class="import-format-card">
+                                    <strong>旧版行格式</strong>
+                                    <span>邮箱----附加字段----Client ID----Refresh Token</span>
+                                </article>
+                                <article class="import-format-card">
+                                    <strong>紧凑行格式</strong>
+                                    <span>邮箱----Client ID----Refresh Token</span>
+                                </article>
+                                <article class="import-format-card">
+                                    <strong>灵活顺序</strong>
+                                    <span>支持 clientid----rt----email，或 email=...----rt=...----clientid=...</span>
+                                </article>
+                                <article class="import-format-card">
+                                    <strong>自动补邮箱</strong>
+                                    <span>只提供 client_id 和 rt 时，会尝试从授权信息解析真实邮箱</span>
+                                </article>
+                            </div>
+                            <label class="field field--full">
                                 <span>批量文本</span>
-                                <textarea id="importSource" name="raw_text" rows="10" placeholder="TimothyRogers2718@outlook.com----pdaxxdln5604----client-id----refresh-token" required></textarea>
+                                <textarea
+                                    id="importSource"
+                                    name="raw_text"
+                                    rows="11"
+                                    placeholder='demo@example.com----client-id----refresh-token'
+                                    required
+                                ></textarea>
                             </label>
-                            <p class="import-hint span-2">按邮箱自动去重。批次内重复邮箱保留最后一条，库内已存在邮箱会自动更新；第二段仅用于兼容导入格式，不会写入当前系统。</p>
-                            <div class="form-actions span-2">
-                                <button type="submit" class="button primary" id="submitImportButton">开始导入</button>
-                                <button type="button" class="button ghost" id="resetImportButton">清空</button>
+                            <p class="import-hint field--full">按邮箱自动去重。批次内重复邮箱保留最后一条，库内已存在邮箱会自动更新；旧版四段格式中的第二段仅用于兼容，不会写入当前系统。若缺少邮箱字段，系统会尝试根据授权信息自动解析。</p>
+                            <div class="form-actions form-actions--import field--full">
+                                <button type="submit" class="button primary compact" id="submitImportButton">开始导入</button>
+                                <button type="button" class="button ghost compact" id="resetImportButton">清空</button>
                             </div>
                         </form>
                     </section>

@@ -21,6 +21,7 @@ TOKEN_URL_IMAP = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
 
 GRAPH_MESSAGES_URL = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages"
 GRAPH_MESSAGE_URL = "https://graph.microsoft.com/v1.0/me/messages/{message_id}"
+GRAPH_PROFILE_URL = "https://graph.microsoft.com/v1.0/me"
 
 IMAP_SERVER_OLD = "outlook.office365.com"
 IMAP_SERVER_NEW = "outlook.live.com"
@@ -135,6 +136,27 @@ class OutlookMailboxManager:
         if target_method == METHOD_GRAPH:
             return self._list_messages_graph(config)
         raise MailboxError(f"不支持的方法: {target_method}")
+
+    def resolve_mailbox_email(
+        self,
+        client_id: str,
+        refresh_token: str,
+        proxy: str | None = None,
+    ) -> str:
+        token = self._get_access_token_graph(client_id, refresh_token, proxy)
+        response = requests.get(
+            GRAPH_PROFILE_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            params={"$select": "mail,userPrincipalName"},
+            proxies=self._build_requests_proxies(proxy),
+            timeout=30,
+        )
+        self._raise_for_response(response, "Graph API 解析邮箱账号失败")
+        payload = response.json()
+        email_address = (payload.get("mail") or payload.get("userPrincipalName") or "").strip()
+        if not email_address:
+            raise MailboxError("无法从授权信息中解析邮箱账号")
+        return email_address
 
     def get_message_detail(
         self,
@@ -843,6 +865,15 @@ class MailboxManager:
             status=raw.get("status", "updated"),
             source=OutlookMailboxManager.METHOD_LABELS.get(request.method, request.method),
         )
+
+    def resolve_mailbox_email(
+        self,
+        *,
+        client_id: str,
+        refresh_token: str,
+        proxy: str | None = None,
+    ) -> str:
+        return self._inner.resolve_mailbox_email(client_id, refresh_token, proxy)
 
     def _to_summary(self, item: dict[str, Any], method: str, folder: str) -> MessageSummary:
         return MessageSummary(
