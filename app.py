@@ -14,11 +14,14 @@ from typing import Any, Callable
 from flask import Flask, jsonify, render_template, request, session
 
 from services.outlook_manager import (
+    FlagStateUpdateRequest,
     MailboxConfig,
     MailboxDetailRequest,
     MailboxError,
     MailboxManager,
     MailboxQuery,
+    MessageDeleteRequest,
+    MessageMoveRequest,
     ReadStateUpdateRequest,
 )
 from services.storage import MailboxProfile, MailboxStore, MailboxStoreError
@@ -399,6 +402,16 @@ def create_app(
         overview = mailbox_manager.get_overview(config)
         return jsonify({"mailbox": _to_jsonable(profile), "overview": _to_jsonable(overview)})
 
+    @app.post("/api/mailbox/folders")
+    @auth_required
+    def mailbox_folders() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        method = _normalize_method(payload.get("method") or profile.preferred_method)
+        config = _profile_to_config(profile, method=method)
+        folders = mailbox_manager.list_folders(config, method)
+        return jsonify({"mailbox": _to_jsonable(profile), "method": method, "folders": _to_jsonable(folders)})
+
     @app.post("/api/mailbox/messages")
     @auth_required
     def mailbox_messages() -> Any:
@@ -409,7 +422,25 @@ def create_app(
         result = mailbox_manager.list_messages(config, query)
         messages = result.messages if hasattr(result, "messages") else result
         count = getattr(result, "returned", len(messages))
-        return jsonify({"mailbox": _to_jsonable(profile), "method": query.method, "messages": _to_jsonable(messages), "count": count})
+        return jsonify(
+            {
+                "mailbox": _to_jsonable(profile),
+                "method": query.method,
+                "folder": query.folder,
+                "messages": _to_jsonable(messages),
+                "count": count,
+                "meta": {
+                    "total": getattr(result, "total", count),
+                    "returned": count,
+                    "page": getattr(result, "page", query.page),
+                    "page_size": getattr(result, "page_size", query.page_size),
+                    "total_pages": getattr(result, "total_pages", 1 if count else 0),
+                    "has_prev": getattr(result, "has_prev", False),
+                    "has_next": getattr(result, "has_next", False),
+                    "folder": getattr(result, "folder", query.folder),
+                },
+            }
+        )
 
     @app.post("/api/key/mailbox/messages")
     @api_key_required
@@ -425,8 +456,19 @@ def create_app(
             {
                 "mailbox": _profile_to_public_mailbox(profile),
                 "method": query.method,
+                "folder": query.folder,
                 "messages": _to_jsonable(messages),
                 "count": count,
+                "meta": {
+                    "total": getattr(result, "total", count),
+                    "returned": count,
+                    "page": getattr(result, "page", query.page),
+                    "page_size": getattr(result, "page_size", query.page_size),
+                    "total_pages": getattr(result, "total_pages", 1 if count else 0),
+                    "has_prev": getattr(result, "has_prev", False),
+                    "has_next": getattr(result, "has_next", False),
+                    "folder": getattr(result, "folder", query.folder),
+                },
             }
         )
 
@@ -462,15 +504,145 @@ def create_app(
         profile = _resolve_mailbox(mailbox_store, payload)
         state_request = _build_read_state_request(payload, default_method=profile.preferred_method)
         config = _profile_to_config(profile, method=state_request.method)
-        result = mailbox_manager.update_read_state(config, state_request)
-        if hasattr(result, "body_text"):
-            message = result
-        else:
-            message = mailbox_manager.get_message_detail(
-                config,
-                MailboxDetailRequest(method=state_request.method, message_id=state_request.message_id),
-            )
+        mailbox_manager.update_read_state(config, state_request)
+        message = mailbox_manager.get_message_detail(
+            config,
+            MailboxDetailRequest(
+                method=state_request.method,
+                message_id=state_request.message_id,
+                folder=state_request.folder,
+            ),
+        )
         return jsonify({"mailbox": _to_jsonable(profile), "message": _to_jsonable(message)})
+
+    @app.post("/api/mailbox/message/flag-state")
+    @auth_required
+    def mailbox_message_flag_state() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        state_request = _build_flag_state_request(payload, default_method=profile.preferred_method)
+        config = _profile_to_config(profile, method=state_request.method)
+        mailbox_manager.update_flag_state(config, state_request)
+        message = mailbox_manager.get_message_detail(
+            config,
+            MailboxDetailRequest(
+                method=state_request.method,
+                message_id=state_request.message_id,
+                folder=state_request.folder,
+            ),
+        )
+        return jsonify({"mailbox": _to_jsonable(profile), "message": _to_jsonable(message)})
+
+    @app.post("/api/mailbox/message/move")
+    @auth_required
+    def mailbox_message_move() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        move_request = _build_move_request(payload, default_method=profile.preferred_method)
+        config = _profile_to_config(profile, method=move_request.method)
+        result = mailbox_manager.move_message(config, move_request)
+        return jsonify({"mailbox": _to_jsonable(profile), "result": _to_jsonable(result)})
+
+    @app.post("/api/mailbox/message/delete")
+    @auth_required
+    def mailbox_message_delete() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        delete_request = _build_delete_request(payload, default_method=profile.preferred_method)
+        config = _profile_to_config(profile, method=delete_request.method)
+        result = mailbox_manager.delete_message(config, delete_request)
+        return jsonify({"mailbox": _to_jsonable(profile), "result": _to_jsonable(result)})
+
+    @app.post("/api/mailbox/messages/actions/batch")
+    @auth_required
+    def mailbox_messages_batch_actions() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        method = _normalize_method(payload.get("method") or profile.preferred_method)
+        folder = _optional_text(payload.get("folder")) or "INBOX"
+        action = _normalize_message_action(payload.get("action"))
+        message_ids = _parse_message_ids(payload.get("message_ids"), maximum=100)
+        destination_folder = _optional_text(payload.get("destination_folder"))
+        if action == "move" and not destination_folder:
+            raise MailboxError("移动邮件时必须提供目标文件夹", code="invalid_destination_folder")
+        if action == "archive" and not destination_folder:
+            destination_folder = "archive"
+
+        config = _profile_to_config(profile, method=method)
+        results: list[dict[str, Any]] = []
+        succeeded = 0
+        failed = 0
+
+        for message_id in message_ids:
+            try:
+                if action == "mark_read":
+                    result = mailbox_manager.update_read_state(
+                        config,
+                        ReadStateUpdateRequest(method=method, message_id=message_id, is_read=True, folder=folder),
+                    )
+                elif action == "mark_unread":
+                    result = mailbox_manager.update_read_state(
+                        config,
+                        ReadStateUpdateRequest(method=method, message_id=message_id, is_read=False, folder=folder),
+                    )
+                elif action == "flag":
+                    result = mailbox_manager.update_flag_state(
+                        config,
+                        FlagStateUpdateRequest(method=method, message_id=message_id, is_flagged=True, folder=folder),
+                    )
+                elif action == "unflag":
+                    result = mailbox_manager.update_flag_state(
+                        config,
+                        FlagStateUpdateRequest(method=method, message_id=message_id, is_flagged=False, folder=folder),
+                    )
+                elif action in {"move", "archive"}:
+                    result = mailbox_manager.move_message(
+                        config,
+                        MessageMoveRequest(
+                            method=method,
+                            message_id=message_id,
+                            destination_folder=destination_folder or "archive",
+                            folder=folder,
+                        ),
+                    )
+                else:
+                    result = mailbox_manager.delete_message(
+                        config,
+                        MessageDeleteRequest(method=method, message_id=message_id, folder=folder),
+                    )
+
+                results.append(
+                    {
+                        "message_id": message_id,
+                        "success": True,
+                        "status": getattr(result, "status", "updated"),
+                        "result": _to_jsonable(result),
+                    }
+                )
+                succeeded += 1
+            except Exception as exc:  # noqa: BLE001
+                results.append(
+                    {
+                        "message_id": message_id,
+                        "success": False,
+                        "status": "error",
+                        "message": str(exc),
+                    }
+                )
+                failed += 1
+
+        return jsonify(
+            {
+                "mailbox": _to_jsonable(profile),
+                "action": action,
+                "results": results,
+                "summary": {
+                    "processed": len(results),
+                    "succeeded": succeeded,
+                    "failed": failed,
+                },
+            }
+        )
 
     @app.errorhandler(MailboxError)
     def handle_mailbox_error(error: MailboxError) -> Any:
@@ -593,23 +765,71 @@ def _parse_mailbox_ids(raw: Any, *, maximum: int) -> list[int]:
     return mailbox_ids
 
 
+def _parse_message_ids(raw: Any, *, maximum: int) -> list[str]:
+    if not isinstance(raw, list):
+        raise MailboxError("message_ids 必须是数组", code="invalid_message_ids")
+    if not raw:
+        raise MailboxError("请至少选择一封邮件", code="invalid_message_ids")
+    if len(raw) > maximum:
+        raise MailboxError(f"一次最多处理 {maximum} 封邮件", code="too_many_messages")
+
+    message_ids: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise MailboxError("message_ids 中的每一项都必须是非空字符串", code="invalid_message_ids")
+        normalized = item.strip()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        message_ids.append(normalized)
+    return message_ids
+
+
 def _build_query(raw: dict[str, Any], *, default_method: str) -> MailboxQuery:
     method = _normalize_method(raw.get("method") or default_method)
-    top = raw.get("top", 10)
+    top = raw.get("top", 20)
+    page = _parse_positive_int(raw.get("page"), field_name="page", default=1, minimum=1)
+    page_size_raw = raw.get("page_size", top)
+    page_size = _parse_positive_int(page_size_raw, field_name="page_size", default=20, minimum=1, maximum=100)
     unread_only = raw.get("unread_only", False)
     keyword = _optional_text(raw.get("keyword")) or ""
+    folder = _optional_text(raw.get("folder")) or "INBOX"
+    read_state = _normalize_read_state(raw.get("read_state"), unread_only=unread_only)
+    has_attachments_only = _parse_bool(
+        raw.get("has_attachments_only"),
+        field_name="has_attachments_only",
+        default=False,
+    )
+    flagged_only = _parse_bool(raw.get("flagged_only"), field_name="flagged_only", default=False)
+    importance = _normalize_importance(raw.get("importance"))
+    sort_order = _normalize_sort_order(raw.get("sort_order"))
 
     if not isinstance(top, int) or top < 1 or top > 50:
         raise MailboxError("拉取数量必须在 1 到 50 之间", code="invalid_top")
     if not isinstance(unread_only, bool):
         raise MailboxError("仅未读参数必须是布尔值", code="invalid_unread_only")
-    return MailboxQuery(method=method, top=top, unread_only=unread_only, keyword=keyword)
+    return MailboxQuery(
+        method=method,
+        top=top,
+        unread_only=unread_only,
+        keyword=keyword,
+        folder=folder,
+        page=page,
+        page_size=page_size,
+        read_state=read_state,
+        has_attachments_only=has_attachments_only,
+        flagged_only=flagged_only,
+        importance=importance,
+        sort_order=sort_order,
+    )
 
 
 def _build_detail_request(raw: dict[str, Any], *, default_method: str) -> MailboxDetailRequest:
     method = _normalize_method(raw.get("method") or default_method)
     message_id = _require_text(raw, "message_id", "缺少邮件标识")
-    return MailboxDetailRequest(method=method, message_id=message_id)
+    folder = _optional_text(raw.get("folder")) or "INBOX"
+    return MailboxDetailRequest(method=method, message_id=message_id, folder=folder)
 
 
 def _build_read_state_request(raw: dict[str, Any], *, default_method: str) -> ReadStateUpdateRequest:
@@ -618,7 +838,38 @@ def _build_read_state_request(raw: dict[str, Any], *, default_method: str) -> Re
     is_read = raw.get("is_read")
     if not isinstance(is_read, bool):
         raise MailboxError("已读状态必须是布尔值", code="invalid_read_state")
-    return ReadStateUpdateRequest(method=method, message_id=message_id, is_read=is_read)
+    folder = _optional_text(raw.get("folder")) or "INBOX"
+    return ReadStateUpdateRequest(method=method, message_id=message_id, is_read=is_read, folder=folder)
+
+
+def _build_flag_state_request(raw: dict[str, Any], *, default_method: str) -> FlagStateUpdateRequest:
+    method = _normalize_method(raw.get("method") or default_method)
+    message_id = _require_text(raw, "message_id", "缺少邮件标识")
+    is_flagged = raw.get("is_flagged")
+    if not isinstance(is_flagged, bool):
+        raise MailboxError("星标状态必须是布尔值", code="invalid_flag_state")
+    folder = _optional_text(raw.get("folder")) or "INBOX"
+    return FlagStateUpdateRequest(method=method, message_id=message_id, is_flagged=is_flagged, folder=folder)
+
+
+def _build_move_request(raw: dict[str, Any], *, default_method: str) -> MessageMoveRequest:
+    method = _normalize_method(raw.get("method") or default_method)
+    message_id = _require_text(raw, "message_id", "缺少邮件标识")
+    destination_folder = _require_text(raw, "destination_folder", "缺少目标文件夹")
+    folder = _optional_text(raw.get("folder")) or "INBOX"
+    return MessageMoveRequest(
+        method=method,
+        message_id=message_id,
+        destination_folder=destination_folder,
+        folder=folder,
+    )
+
+
+def _build_delete_request(raw: dict[str, Any], *, default_method: str) -> MessageDeleteRequest:
+    method = _normalize_method(raw.get("method") or default_method)
+    message_id = _require_text(raw, "message_id", "缺少邮件标识")
+    folder = _optional_text(raw.get("folder")) or "INBOX"
+    return MessageDeleteRequest(method=method, message_id=message_id, folder=folder)
 
 
 def _extract_mailbox_payload(raw: dict[str, Any], *, partial: bool = False) -> dict[str, Any]:
@@ -1132,6 +1383,56 @@ def _normalize_method(value: Any) -> str:
     if method not in {"graph_api", "imap_new", "imap_old"}:
         raise MailboxError("不支持的邮件接入方式", code="invalid_method")
     return method
+
+
+def _normalize_read_state(value: Any, *, unread_only: bool = False) -> str:
+    if value in (None, ""):
+        return "unread" if unread_only else "all"
+    if not isinstance(value, str):
+        raise MailboxError("read_state 参数类型错误", code="invalid_read_state")
+    normalized = value.strip().casefold()
+    if normalized not in {"all", "read", "unread"}:
+        raise MailboxError("read_state 仅支持 all、read、unread", code="invalid_read_state")
+    return normalized
+
+
+def _normalize_importance(value: Any) -> str:
+    if value in (None, ""):
+        return "all"
+    if not isinstance(value, str):
+        raise MailboxError("importance 参数类型错误", code="invalid_importance")
+    normalized = value.strip().casefold()
+    if normalized not in {"all", "high", "normal", "low"}:
+        raise MailboxError("importance 仅支持 all、high、normal、low", code="invalid_importance")
+    return normalized
+
+
+def _normalize_sort_order(value: Any) -> str:
+    if value in (None, ""):
+        return "desc"
+    if not isinstance(value, str):
+        raise MailboxError("sort_order 参数类型错误", code="invalid_sort_order")
+    normalized = value.strip().casefold()
+    if normalized not in {"asc", "desc"}:
+        raise MailboxError("sort_order 仅支持 asc、desc", code="invalid_sort_order")
+    return normalized
+
+
+def _normalize_message_action(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise MailboxError("缺少批量操作类型", code="invalid_message_action")
+    normalized = value.strip().casefold()
+    if normalized not in {"mark_read", "mark_unread", "flag", "unflag", "delete", "archive", "move"}:
+        raise MailboxError("不支持的批量操作类型", code="invalid_message_action")
+    return normalized
+
+
+def _parse_bool(raw: Any, *, field_name: str, default: bool) -> bool:
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    raise MailboxError(f"{field_name} 必须是布尔值", code=f"invalid_{field_name}")
 
 
 def _require_text(raw: dict[str, Any], key: str, error_message: str) -> str:

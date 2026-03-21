@@ -19,8 +19,19 @@ const state = {
     selectedMailbox: null,
     selectedMailboxDetail: null,
     activeMethod: null,
+    folders: [],
+    selectedFolder: "INBOX",
     overviewMethods: [],
     messages: [],
+    messageMeta: createDefaultMessageMeta(),
+    messagePage: 1,
+    messagePageSize: 20,
+    readState: "all",
+    hasAttachmentsOnly: false,
+    flaggedOnly: false,
+    importance: "all",
+    sortOrder: "desc",
+    selectedMessageIds: new Set(),
     selectedMessageId: null,
     selectedMessage: null,
     searchTerm: "",
@@ -30,6 +41,7 @@ const state = {
     editorMode: "create",
     messageFetchToken: 0,
     detailFetchToken: 0,
+    detailView: "text",
 };
 
 const elements = {
@@ -80,12 +92,34 @@ const elements = {
     resetImportButton: document.getElementById("resetImportButton"),
     submitImportButton: document.getElementById("submitImportButton"),
     searchInput: document.getElementById("searchInput"),
+    refreshMessagesButton: document.getElementById("refreshMessagesButton"),
     overviewStrip: document.getElementById("overviewStrip"),
     overviewCards: document.getElementById("overviewCards"),
     overviewCardTemplate: document.getElementById("overviewCardTemplate"),
+    folderList: document.getElementById("folderList"),
+    folderSummary: document.getElementById("folderSummary"),
+    readStateSelect: document.getElementById("readStateSelect"),
+    importanceSelect: document.getElementById("importanceSelect"),
+    sortOrderSelect: document.getElementById("sortOrderSelect"),
+    pageSizeSelect: document.getElementById("pageSizeSelect"),
+    attachmentOnlyCheckbox: document.getElementById("attachmentOnlyCheckbox"),
+    flaggedOnlyCheckbox: document.getElementById("flaggedOnlyCheckbox"),
+    selectedMessageCount: document.getElementById("selectedMessageCount"),
+    clearSelectedMessagesButton: document.getElementById("clearSelectedMessagesButton"),
+    batchMarkReadButton: document.getElementById("batchMarkReadButton"),
+    batchMarkUnreadButton: document.getElementById("batchMarkUnreadButton"),
+    batchFlagButton: document.getElementById("batchFlagButton"),
+    batchUnflagButton: document.getElementById("batchUnflagButton"),
+    batchMoveFolderSelect: document.getElementById("batchMoveFolderSelect"),
+    batchMoveButton: document.getElementById("batchMoveButton"),
+    batchArchiveButton: document.getElementById("batchArchiveButton"),
+    batchDeleteButton: document.getElementById("batchDeleteButton"),
     messageList: document.getElementById("messageList"),
     messageItemTemplate: document.getElementById("messageItemTemplate"),
     messageCount: document.getElementById("messageCount"),
+    messagePrevPageButton: document.getElementById("messagePrevPageButton"),
+    messageNextPageButton: document.getElementById("messageNextPageButton"),
+    messagePageInfo: document.getElementById("messagePageInfo"),
     listHint: document.getElementById("listHint"),
     detailEmpty: document.getElementById("detailEmpty"),
     detailCard: document.getElementById("detailCard"),
@@ -94,12 +128,32 @@ const elements = {
     detailSender: document.getElementById("detailSender"),
     detailTime: document.getElementById("detailTime"),
     detailTo: document.getElementById("detailTo"),
+    detailCc: document.getElementById("detailCc"),
+    detailBcc: document.getElementById("detailBcc"),
     detailMessageId: document.getElementById("detailMessageId"),
+    detailConversationId: document.getElementById("detailConversationId"),
     detailReadBadge: document.getElementById("detailReadBadge"),
+    detailFlagBadge: document.getElementById("detailFlagBadge"),
+    detailImportanceBadge: document.getElementById("detailImportanceBadge"),
     detailAttachmentBadge: document.getElementById("detailAttachmentBadge"),
+    detailAttachmentsSection: document.getElementById("detailAttachmentsSection"),
+    detailAttachmentList: document.getElementById("detailAttachmentList"),
     detailBody: document.getElementById("detailBody"),
+    detailHtmlFrame: document.getElementById("detailHtmlFrame"),
+    detailHeaders: document.getElementById("detailHeaders"),
+    detailTextViewButton: document.getElementById("detailTextViewButton"),
+    detailHtmlViewButton: document.getElementById("detailHtmlViewButton"),
+    detailHeadersViewButton: document.getElementById("detailHeadersViewButton"),
     markReadButton: document.getElementById("markReadButton"),
     markUnreadButton: document.getElementById("markUnreadButton"),
+    flagMessageButton: document.getElementById("flagMessageButton"),
+    unflagMessageButton: document.getElementById("unflagMessageButton"),
+    moveFolderSelect: document.getElementById("moveFolderSelect"),
+    moveMessageButton: document.getElementById("moveMessageButton"),
+    archiveMessageButton: document.getElementById("archiveMessageButton"),
+    deleteMessageButton: document.getElementById("deleteMessageButton"),
+    prevMessageButton: document.getElementById("prevMessageButton"),
+    nextMessageButton: document.getElementById("nextMessageButton"),
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -243,6 +297,7 @@ function bindEvents() {
 
     elements.searchInput.addEventListener("input", () => {
         state.searchTerm = elements.searchInput.value.trim();
+        state.messagePage = 1;
         window.clearTimeout(state.searchTimer);
         state.searchTimer = window.setTimeout(() => {
             if (state.selectedMailboxId) {
@@ -251,12 +306,151 @@ function bindEvents() {
         }, 320);
     });
 
+    elements.refreshMessagesButton.addEventListener("click", async () => {
+        await loadFolders({ silent: true });
+        await loadMessages({ silent: true, keepSelection: true });
+    });
+
+    elements.readStateSelect.addEventListener("change", async () => {
+        state.readState = readString(elements.readStateSelect.value) || "all";
+        state.messagePage = 1;
+        await loadMessages({ silent: true, keepSelection: false });
+    });
+
+    elements.importanceSelect.addEventListener("change", async () => {
+        state.importance = readString(elements.importanceSelect.value) || "all";
+        state.messagePage = 1;
+        await loadMessages({ silent: true, keepSelection: false });
+    });
+
+    elements.sortOrderSelect.addEventListener("change", async () => {
+        state.sortOrder = readString(elements.sortOrderSelect.value) || "desc";
+        state.messagePage = 1;
+        await loadMessages({ silent: true, keepSelection: false });
+    });
+
+    elements.pageSizeSelect.addEventListener("change", async () => {
+        state.messagePageSize = Number.parseInt(elements.pageSizeSelect.value, 10) || 20;
+        state.messagePage = 1;
+        await loadMessages({ silent: true, keepSelection: false });
+    });
+
+    elements.attachmentOnlyCheckbox.addEventListener("change", async () => {
+        state.hasAttachmentsOnly = elements.attachmentOnlyCheckbox.checked;
+        state.messagePage = 1;
+        await loadMessages({ silent: true, keepSelection: false });
+    });
+
+    elements.flaggedOnlyCheckbox.addEventListener("change", async () => {
+        state.flaggedOnly = elements.flaggedOnlyCheckbox.checked;
+        state.messagePage = 1;
+        await loadMessages({ silent: true, keepSelection: false });
+    });
+
+    elements.messagePrevPageButton.addEventListener("click", async () => {
+        if (state.messagePage <= 1) {
+            return;
+        }
+        state.messagePage -= 1;
+        await loadMessages({ silent: true, keepSelection: false });
+    });
+
+    elements.messageNextPageButton.addEventListener("click", async () => {
+        if (!state.messageMeta.has_next) {
+            return;
+        }
+        state.messagePage += 1;
+        await loadMessages({ silent: true, keepSelection: false });
+    });
+
+    elements.clearSelectedMessagesButton.addEventListener("click", () => {
+        state.selectedMessageIds = new Set();
+        renderMessageBatchActions();
+        renderMessages();
+    });
+
+    elements.batchMarkReadButton.addEventListener("click", async () => {
+        await runBatchMessageAction("mark_read");
+    });
+
+    elements.batchMarkUnreadButton.addEventListener("click", async () => {
+        await runBatchMessageAction("mark_unread");
+    });
+
+    elements.batchFlagButton.addEventListener("click", async () => {
+        await runBatchMessageAction("flag");
+    });
+
+    elements.batchUnflagButton.addEventListener("click", async () => {
+        await runBatchMessageAction("unflag");
+    });
+
+    elements.batchMoveButton.addEventListener("click", async () => {
+        await runBatchMessageAction("move", readString(elements.batchMoveFolderSelect.value));
+    });
+
+    elements.batchArchiveButton.addEventListener("click", async () => {
+        await runBatchMessageAction("archive");
+    });
+
+    elements.batchDeleteButton.addEventListener("click", async () => {
+        await runBatchMessageAction("delete");
+    });
+
     elements.markReadButton.addEventListener("click", async () => {
         await updateReadState(true);
     });
 
     elements.markUnreadButton.addEventListener("click", async () => {
         await updateReadState(false);
+    });
+
+    elements.flagMessageButton.addEventListener("click", async () => {
+        await updateFlagState(true);
+    });
+
+    elements.unflagMessageButton.addEventListener("click", async () => {
+        await updateFlagState(false);
+    });
+
+    elements.moveMessageButton.addEventListener("click", async () => {
+        const targetFolder = readString(elements.moveFolderSelect.value);
+        if (!targetFolder) {
+            setStatus("请先选择目标文件夹", true);
+            return;
+        }
+        await moveSelectedMessage(targetFolder);
+    });
+
+    elements.archiveMessageButton.addEventListener("click", async () => {
+        await moveSelectedMessage("archive");
+    });
+
+    elements.deleteMessageButton.addEventListener("click", async () => {
+        await deleteSelectedMessage();
+    });
+
+    elements.detailTextViewButton.addEventListener("click", () => {
+        state.detailView = "text";
+        renderDetail(state.selectedMessage);
+    });
+
+    elements.detailHtmlViewButton.addEventListener("click", () => {
+        state.detailView = "html";
+        renderDetail(state.selectedMessage);
+    });
+
+    elements.detailHeadersViewButton.addEventListener("click", () => {
+        state.detailView = "headers";
+        renderDetail(state.selectedMessage);
+    });
+
+    elements.prevMessageButton.addEventListener("click", async () => {
+        await selectAdjacentMessage(-1);
+    });
+
+    elements.nextMessageButton.addEventListener("click", async () => {
+        await selectAdjacentMessage(1);
     });
 
     document.addEventListener("visibilitychange", () => {
@@ -378,7 +572,12 @@ async function selectMailbox(mailboxId) {
     state.selectedMailbox = mailbox;
     state.selectedMailboxDetail = null;
     state.activeMethod = mailbox?.preferred_method || "graph_api";
+    state.folders = [];
+    state.selectedFolder = "INBOX";
     state.overviewMethods = [];
+    state.messageMeta = createDefaultMessageMeta();
+    state.messagePage = 1;
+    state.selectedMessageIds = new Set();
     state.selectedMessage = null;
     state.selectedMessageId = null;
     state.messages = [];
@@ -386,6 +585,8 @@ async function selectMailbox(mailboxId) {
     elements.currentMethodLabel.textContent = mailbox ? labelForMethod(state.activeMethod) : "未设置";
     renderMailboxList();
     renderOverview([]);
+    renderFolderList();
+    renderMessageBatchActions();
     renderMessages();
     renderDetail(null);
 
@@ -397,6 +598,7 @@ async function selectMailbox(mailboxId) {
     closeEditor();
     setStatus(`已切换到邮箱：${mailbox.label}`);
     await loadOverview();
+    await loadFolders({ silent: true });
     await loadMessages({ silent: true, keepSelection: false });
     startAutoRefresh();
 }
@@ -565,6 +767,35 @@ async function loadOverview() {
     }
 }
 
+async function loadFolders({ silent = false } = {}) {
+    if (!ensureMailboxSelected()) {
+        return;
+    }
+    try {
+        const payload = await requestJson("/api/mailbox/folders", {
+            method: "POST",
+            body: {
+                mailbox_id: state.selectedMailboxId,
+                method: state.activeMethod || state.selectedMailbox?.preferred_method || "graph_api",
+            },
+        });
+        state.folders = Array.isArray(payload.folders) ? payload.folders : [];
+        const nextFolder = state.folders.find((item) => item.id === state.selectedFolder)
+            ? state.selectedFolder
+            : (state.folders.find((item) => item.is_default)?.id || state.folders[0]?.id || "INBOX");
+        state.selectedFolder = nextFolder;
+        renderFolderList();
+        syncFolderSelectOptions();
+    } catch (error) {
+        state.folders = [];
+        renderFolderList();
+        syncFolderSelectOptions();
+        if (!silent) {
+            setStatus(error.message, true);
+        }
+    }
+}
+
 async function loadMessages({ silent = false, keepSelection = true } = {}) {
     if (!ensureMailboxSelected() || state.isLoadingMessages) {
         return;
@@ -583,8 +814,16 @@ async function loadMessages({ silent = false, keepSelection = true } = {}) {
             body: {
                 mailbox_id: state.selectedMailboxId,
                 method,
-                top: 20,
-                unread_only: false,
+                folder: state.selectedFolder || "INBOX",
+                top: state.messagePageSize,
+                page: state.messagePage,
+                page_size: state.messagePageSize,
+                unread_only: state.readState === "unread",
+                read_state: state.readState,
+                has_attachments_only: state.hasAttachmentsOnly,
+                flagged_only: state.flaggedOnly,
+                importance: state.importance,
+                sort_order: state.sortOrder,
                 keyword: state.searchTerm,
             },
         });
@@ -594,6 +833,8 @@ async function loadMessages({ silent = false, keepSelection = true } = {}) {
         }
 
         state.activeMethod = payload.method || method;
+        state.selectedFolder = payload.folder || state.selectedFolder;
+        state.messageMeta = payload.meta || createDefaultMessageMeta();
         const previousSignature = buildMessageListSignature(state.messages);
         const previousSelectedMessageId = state.selectedMessageId;
         const nextMessages = payload.messages || [];
@@ -611,10 +852,18 @@ async function loadMessages({ silent = false, keepSelection = true } = {}) {
         }
 
         setElementText(elements.messageCount, `${payload.count} 封邮件`);
-        setElementText(elements.listHint, state.searchTerm ? `搜索：${state.searchTerm}` : "自动刷新中");
+        setElementText(
+            elements.listHint,
+            state.searchTerm
+                ? `搜索：${state.searchTerm}`
+                : `${state.selectedFolder || "INBOX"} · ${labelForMethod(state.activeMethod)}`
+        );
         setElementText(elements.currentMethodLabel, labelForMethod(state.activeMethod));
         setElementText(elements.lastSyncLabel, formatDate(new Date().toISOString(), true));
+        renderFolderList();
+        renderMessageBatchActions();
         renderOverview(state.overviewMethods);
+        renderMessagePagination();
 
         if (state.selectedMessageId) {
             const selectedSummary = findMessageById(state.selectedMessageId);
@@ -642,6 +891,8 @@ async function loadMessages({ silent = false, keepSelection = true } = {}) {
         renderMessages();
         renderDetail(null);
         setElementText(elements.messageCount, "0 封邮件");
+        state.messageMeta = createDefaultMessageMeta();
+        renderMessagePagination();
         setElementText(elements.listHint, "加载失败");
         setStatus(error.message, true);
     } finally {
@@ -672,6 +923,7 @@ async function loadMessageDetail(messageId, { silent = false } = {}) {
             body: {
                 mailbox_id: state.selectedMailboxId,
                 method: state.activeMethod || state.selectedMailbox?.preferred_method || "graph_api",
+                folder: state.selectedFolder || "INBOX",
                 message_id: messageId,
             },
         });
@@ -703,6 +955,7 @@ async function updateReadState(isRead) {
             body: {
                 mailbox_id: state.selectedMailboxId,
                 method: state.activeMethod || state.selectedMailbox?.preferred_method || "graph_api",
+                folder: state.selectedFolder || "INBOX",
                 message_id: state.selectedMessage.message_id,
                 is_read: isRead,
             },
@@ -720,6 +973,101 @@ async function updateReadState(isRead) {
         setStatus(error.message, true);
     } finally {
         setBusy([elements.markReadButton, elements.markUnreadButton], false);
+    }
+}
+
+async function updateFlagState(isFlagged) {
+    if (!ensureMailboxSelected() || !state.selectedMessage) {
+        setStatus("请先选择一封邮件", true);
+        return;
+    }
+
+    setBusy([elements.flagMessageButton, elements.unflagMessageButton], true);
+    try {
+        const payload = await requestJson("/api/mailbox/message/flag-state", {
+            method: "POST",
+            body: {
+                mailbox_id: state.selectedMailboxId,
+                method: state.activeMethod || state.selectedMailbox?.preferred_method || "graph_api",
+                folder: state.selectedFolder || "INBOX",
+                message_id: state.selectedMessage.message_id,
+                is_flagged: isFlagged,
+            },
+        });
+        state.selectedMessage = payload.message;
+        state.messages = state.messages.map((item) =>
+            item.message_id === payload.message.message_id
+                ? { ...item, is_flagged: payload.message.is_flagged }
+                : item
+        );
+        renderMessages();
+        renderDetail(payload.message);
+        setStatus(isFlagged ? "邮件已加星" : "邮件已取消星标");
+    } catch (error) {
+        setStatus(error.message, true);
+    } finally {
+        setBusy([elements.flagMessageButton, elements.unflagMessageButton], false);
+    }
+}
+
+async function moveSelectedMessage(destinationFolder) {
+    if (!ensureMailboxSelected() || !state.selectedMessage) {
+        setStatus("请先选择一封邮件", true);
+        return;
+    }
+
+    setBusy([elements.moveMessageButton, elements.archiveMessageButton], true);
+    try {
+        await requestJson("/api/mailbox/message/move", {
+            method: "POST",
+            body: {
+                mailbox_id: state.selectedMailboxId,
+                method: state.activeMethod || state.selectedMailbox?.preferred_method || "graph_api",
+                folder: state.selectedFolder || "INBOX",
+                message_id: state.selectedMessage.message_id,
+                destination_folder: destinationFolder,
+            },
+        });
+        state.selectedMessage = null;
+        state.selectedMessageId = null;
+        await loadFolders({ silent: true });
+        await loadMessages({ silent: true, keepSelection: false });
+        renderDetail(null);
+        setStatus(`邮件已移动到 ${destinationFolder}`);
+    } catch (error) {
+        setStatus(error.message, true);
+    } finally {
+        setBusy([elements.moveMessageButton, elements.archiveMessageButton], false);
+    }
+}
+
+async function deleteSelectedMessage() {
+    if (!ensureMailboxSelected() || !state.selectedMessage) {
+        setStatus("请先选择一封邮件", true);
+        return;
+    }
+
+    setBusy([elements.deleteMessageButton], true);
+    try {
+        await requestJson("/api/mailbox/message/delete", {
+            method: "POST",
+            body: {
+                mailbox_id: state.selectedMailboxId,
+                method: state.activeMethod || state.selectedMailbox?.preferred_method || "graph_api",
+                folder: state.selectedFolder || "INBOX",
+                message_id: state.selectedMessage.message_id,
+            },
+        });
+        state.selectedMessage = null;
+        state.selectedMessageId = null;
+        await loadFolders({ silent: true });
+        await loadMessages({ silent: true, keepSelection: false });
+        renderDetail(null);
+        setStatus("邮件已删除");
+    } catch (error) {
+        setStatus(error.message, true);
+    } finally {
+        setBusy([elements.deleteMessageButton], false);
     }
 }
 
@@ -1080,10 +1428,13 @@ async function switchMailboxMethod(method) {
     state.selectedMessageId = null;
     state.selectedMessage = null;
     state.messages = [];
+    state.selectedMessageIds = new Set();
     renderOverview(state.overviewMethods);
+    renderMessageBatchActions();
     renderMessages();
     renderDetail(null);
     setStatus(`已切换到 ${labelForMethod(targetMethod)}，正在刷新邮件`);
+    await loadFolders({ silent: true });
     await loadMessages({ silent: true, keepSelection: false });
 }
 
@@ -1104,6 +1455,144 @@ async function testMailboxConnection() {
     }
 }
 
+async function runBatchMessageAction(action, destinationFolder = "") {
+    const messageIds = Array.from(state.selectedMessageIds);
+    if (!messageIds.length) {
+        setStatus("请先选择要处理的邮件", true);
+        return;
+    }
+
+    const busyTargets = [
+        elements.batchMarkReadButton,
+        elements.batchMarkUnreadButton,
+        elements.batchFlagButton,
+        elements.batchUnflagButton,
+        elements.batchMoveButton,
+        elements.batchArchiveButton,
+        elements.batchDeleteButton,
+    ];
+    setBusy(busyTargets, true);
+    try {
+        const payload = {
+            mailbox_id: state.selectedMailboxId,
+            method: state.activeMethod || state.selectedMailbox?.preferred_method || "graph_api",
+            folder: state.selectedFolder || "INBOX",
+            message_ids: messageIds,
+            action,
+        };
+        if (destinationFolder) {
+            payload.destination_folder = destinationFolder;
+        }
+        const response = await requestJson("/api/mailbox/messages/actions/batch", {
+            method: "POST",
+            body: payload,
+        });
+        state.selectedMessageIds = new Set();
+        renderMessageBatchActions();
+        await loadFolders({ silent: true });
+        await loadMessages({ silent: true, keepSelection: false });
+        const summary = response.summary || {};
+        setStatus(`批量操作完成：成功 ${summary.succeeded || 0} 封，失败 ${summary.failed || 0} 封`);
+    } catch (error) {
+        setStatus(error.message, true);
+    } finally {
+        setBusy(busyTargets, false);
+    }
+}
+
+async function selectAdjacentMessage(direction) {
+    if (!state.messages.length) {
+        return;
+    }
+    const currentIndex = state.messages.findIndex((item) => item.message_id === state.selectedMessageId);
+    const nextIndex = currentIndex < 0 ? 0 : currentIndex + direction;
+    if (nextIndex < 0 || nextIndex >= state.messages.length) {
+        return;
+    }
+    await loadMessageDetail(state.messages[nextIndex].message_id);
+}
+
+function renderFolderList() {
+    if (!elements.folderList) {
+        return;
+    }
+    elements.folderList.innerHTML = "";
+    if (!state.folders.length) {
+        elements.folderList.innerHTML = "<div class='detail-empty compact-empty'>暂无文件夹数据</div>";
+        setElementText(elements.folderSummary, "未加载");
+        return;
+    }
+    const fragment = document.createDocumentFragment();
+    state.folders.forEach((folder) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "folder-item";
+        button.classList.toggle("is-active", folder.id === state.selectedFolder);
+        button.innerHTML = `
+            <strong>${escapeHtml(folder.display_name || folder.name || folder.id)}</strong>
+            <span>${folder.unread || 0} 未读 / ${folder.total || 0} 总数</span>
+        `;
+        button.addEventListener("click", async () => {
+            state.selectedFolder = folder.id;
+            state.messagePage = 1;
+            renderFolderList();
+            await loadMessages({ silent: true, keepSelection: false });
+        });
+        fragment.append(button);
+    });
+    elements.folderList.replaceChildren(fragment);
+    setElementText(elements.folderSummary, `共 ${state.folders.length} 个文件夹`);
+}
+
+function syncFolderSelectOptions() {
+    [elements.moveFolderSelect, elements.batchMoveFolderSelect].forEach((select) => {
+        if (!select) {
+            return;
+        }
+        const currentValue = select.value;
+        select.innerHTML = "<option value=''>移动到...</option>";
+        state.folders.forEach((folder) => {
+            const option = document.createElement("option");
+            option.value = folder.id;
+            option.textContent = folder.display_name || folder.name || folder.id;
+            select.append(option);
+        });
+        if (currentValue) {
+            select.value = currentValue;
+        }
+    });
+}
+
+function renderMessageBatchActions() {
+    const selectedCount = state.selectedMessageIds.size;
+    setElementText(elements.selectedMessageCount, `已选 ${selectedCount} 封邮件`);
+    [
+        elements.clearSelectedMessagesButton,
+        elements.batchMarkReadButton,
+        elements.batchMarkUnreadButton,
+        elements.batchFlagButton,
+        elements.batchUnflagButton,
+        elements.batchMoveButton,
+        elements.batchArchiveButton,
+        elements.batchDeleteButton,
+    ].forEach((element) => {
+        if (element) {
+            element.disabled = selectedCount === 0;
+        }
+    });
+    if (elements.batchMoveFolderSelect) {
+        elements.batchMoveFolderSelect.disabled = !state.folders.length || selectedCount === 0;
+    }
+}
+
+function renderMessagePagination() {
+    const meta = state.messageMeta || createDefaultMessageMeta();
+    const totalPages = meta.total_pages || 0;
+    setElementText(elements.messagePageInfo, totalPages ? `第 ${meta.page} / ${totalPages} 页` : "第 0 / 0 页");
+    elements.messagePrevPageButton.disabled = !meta.has_prev;
+    elements.messageNextPageButton.disabled = !meta.has_next;
+}
+
 function renderMessages() {
     if (!state.messages.length) {
         const emptyState = document.createElement("div");
@@ -1116,18 +1605,38 @@ function renderMessages() {
     const listFragment = document.createDocumentFragment();
     state.messages.forEach((message) => {
         const itemFragment = elements.messageItemTemplate.content.cloneNode(true);
+        const article = itemFragment.querySelector(".message-item-card");
+        const checkbox = itemFragment.querySelector(".message-select-checkbox");
         const button = itemFragment.querySelector(".message-item");
         button.dataset.messageId = message.message_id;
         button.classList.toggle("is-active", message.message_id === state.selectedMessageId);
         button.classList.toggle("is-unread", !message.is_read);
+        article.classList.toggle("is-selected", state.selectedMessageIds.has(message.message_id));
+        checkbox.checked = state.selectedMessageIds.has(message.message_id);
+        checkbox.addEventListener("change", () => {
+            const nextSelected = new Set(state.selectedMessageIds);
+            if (checkbox.checked) {
+                nextSelected.add(message.message_id);
+            } else {
+                nextSelected.delete(message.message_id);
+            }
+            state.selectedMessageIds = nextSelected;
+            renderMessageBatchActions();
+            renderMessages();
+        });
         button.querySelector(".message-item-sender").textContent = message.sender_name || message.sender || "未知发件人";
         button.querySelector(".message-item-time").textContent = formatDate(message.received_at);
         button.querySelector(".message-item-subject").textContent = message.subject || "无主题";
         button.querySelector(".message-item-preview").textContent = message.preview || "无正文预览";
+        const flagBadge = button.querySelector(".message-item-flag");
+        const importanceBadge = button.querySelector(".message-item-importance");
+        flagBadge.hidden = !message.is_flagged;
+        importanceBadge.hidden = !message.importance || message.importance === "normal";
+        importanceBadge.textContent = importanceLabel(message.importance);
         button.addEventListener("click", async () => {
             await loadMessageDetail(message.message_id);
         });
-        listFragment.append(button);
+        listFragment.append(itemFragment);
     });
     elements.messageList.replaceChildren(listFragment);
 }
@@ -1138,6 +1647,13 @@ function renderDetail(message) {
         elements.detailCard.hidden = true;
         elements.markReadButton.disabled = true;
         elements.markUnreadButton.disabled = true;
+        elements.flagMessageButton.disabled = true;
+        elements.unflagMessageButton.disabled = true;
+        elements.moveMessageButton.disabled = true;
+        elements.archiveMessageButton.disabled = true;
+        elements.deleteMessageButton.disabled = true;
+        elements.prevMessageButton.disabled = true;
+        elements.nextMessageButton.disabled = true;
         return;
     }
 
@@ -1148,12 +1664,27 @@ function renderDetail(message) {
     setElementText(elements.detailSender, formatSender(message));
     setElementText(elements.detailTime, formatDate(message.received_at, true));
     setElementText(elements.detailTo, formatRecipients(message.to_recipients || []));
+    setElementText(elements.detailCc, formatRecipients(message.cc_recipients || []));
+    setElementText(elements.detailBcc, formatRecipients(message.bcc_recipients || []));
     setElementText(elements.detailMessageId, message.internet_message_id || message.message_id || "-");
+    setElementText(elements.detailConversationId, message.conversation_id || "-");
     setElementText(elements.detailReadBadge, message.is_read ? "已读" : "未读");
+    setElementText(elements.detailFlagBadge, message.is_flagged ? "已星标" : "未星标");
+    setElementText(elements.detailImportanceBadge, importanceLabel(message.importance));
     setElementText(elements.detailAttachmentBadge, message.has_attachments ? "有附件" : "无附件");
     setElementText(elements.detailBody, message.body_text || message.preview || "");
+    setElementText(elements.detailHeaders, formatHeaders(message.headers || {}));
+    renderAttachmentList(message.attachments || []);
+    renderDetailView(message);
     elements.markReadButton.disabled = message.is_read;
     elements.markUnreadButton.disabled = !message.is_read;
+    elements.flagMessageButton.disabled = message.is_flagged;
+    elements.unflagMessageButton.disabled = !message.is_flagged;
+    elements.moveMessageButton.disabled = false;
+    elements.archiveMessageButton.disabled = false;
+    elements.deleteMessageButton.disabled = false;
+    elements.prevMessageButton.disabled = state.messages.findIndex((item) => item.message_id === message.message_id) <= 0;
+    elements.nextMessageButton.disabled = state.messages.findIndex((item) => item.message_id === message.message_id) === state.messages.length - 1;
 }
 
 function fillMailboxForm(mailbox) {
@@ -1193,10 +1724,22 @@ function resetWorkspace({ preserveAuth = false } = {}) {
     state.selectedMailbox = null;
     state.selectedMailboxDetail = null;
     state.activeMethod = null;
+    state.folders = [];
+    state.selectedFolder = "INBOX";
     state.overviewMethods = [];
     state.messages = [];
+    state.messageMeta = createDefaultMessageMeta();
+    state.messagePage = 1;
+    state.messagePageSize = 20;
+    state.readState = "all";
+    state.hasAttachmentsOnly = false;
+    state.flaggedOnly = false;
+    state.importance = "all";
+    state.sortOrder = "desc";
+    state.selectedMessageIds = new Set();
     state.selectedMessageId = null;
     state.selectedMessage = null;
+    state.detailView = "text";
     state.searchTerm = "";
     state.mailboxFetchToken += 1;
     state.messageFetchToken += 1;
@@ -1207,9 +1750,18 @@ function resetWorkspace({ preserveAuth = false } = {}) {
     elements.mailboxSearchInput.value = "";
     elements.bulkPreferredMethodSelect.value = "";
     elements.searchInput.value = "";
+    elements.readStateSelect.value = "all";
+    elements.importanceSelect.value = "all";
+    elements.sortOrderSelect.value = "desc";
+    elements.pageSizeSelect.value = "20";
+    elements.attachmentOnlyCheckbox.checked = false;
+    elements.flaggedOnlyCheckbox.checked = false;
     elements.lastSyncLabel.textContent = "未同步";
     renderMailboxList();
     renderOverview([]);
+    renderFolderList();
+    renderMessageBatchActions();
+    renderMessagePagination();
     renderMessages();
     renderDetail(null);
     resetMailboxForm();
@@ -1344,6 +1896,19 @@ function createDefaultMailboxMeta() {
         total_pages: 0,
         has_prev: false,
         has_next: false,
+    };
+}
+
+function createDefaultMessageMeta() {
+    return {
+        total: 0,
+        returned: 0,
+        page: 1,
+        page_size: 20,
+        total_pages: 0,
+        has_prev: false,
+        has_next: false,
+        folder: "INBOX",
     };
 }
 
@@ -1509,6 +2074,8 @@ function buildMessageListSignature(messages) {
             message.preview || "",
             message.has_attachments ? "1" : "0",
             message.internet_message_id || "",
+            message.is_flagged ? "1" : "0",
+            message.importance || "",
         ].join("::"))
         .join("|");
 }
@@ -1553,11 +2120,87 @@ function formatRecipients(values) {
     if (!values.length) {
         return "-";
     }
-    return values.slice(0, 3).join("，");
+    return values.join("，");
 }
 
 function setImportFileLabel(fileName) {
     elements.importFileLabel.textContent = fileName || "支持 .txt / .csv / .tsv / .json";
+}
+
+function renderAttachmentList(attachments) {
+    elements.detailAttachmentsSection.hidden = !attachments.length;
+    elements.detailAttachmentList.innerHTML = "";
+    if (!attachments.length) {
+        return;
+    }
+    const fragment = document.createDocumentFragment();
+    attachments.forEach((attachment) => {
+        const item = document.createElement("article");
+        item.className = "attachment-item";
+        item.innerHTML = `
+            <strong>${escapeHtml(attachment.name || "未命名附件")}</strong>
+            <span>${escapeHtml(attachment.content_type || "unknown")} · ${formatBytes(attachment.size || 0)}</span>
+        `;
+        fragment.append(item);
+    });
+    elements.detailAttachmentList.replaceChildren(fragment);
+}
+
+function renderDetailView(message) {
+    const canShowHtml = Boolean(message?.body_html);
+    elements.detailHtmlViewButton.disabled = !canShowHtml;
+    if (state.detailView === "html" && !canShowHtml) {
+        state.detailView = "text";
+    }
+
+    elements.detailBody.hidden = state.detailView !== "text";
+    elements.detailHtmlFrame.hidden = state.detailView !== "html";
+    elements.detailHeaders.hidden = state.detailView !== "headers";
+
+    elements.detailTextViewButton.classList.toggle("is-active", state.detailView === "text");
+    elements.detailHtmlViewButton.classList.toggle("is-active", state.detailView === "html");
+    elements.detailHeadersViewButton.classList.toggle("is-active", state.detailView === "headers");
+
+    if (state.detailView === "html") {
+        elements.detailHtmlFrame.srcdoc = message?.body_html || "<p>当前邮件没有 HTML 正文</p>";
+    }
+}
+
+function formatHeaders(headers) {
+    const entries = Object.entries(headers || {});
+    if (!entries.length) {
+        return "暂无 headers";
+    }
+    return entries.map(([key, value]) => `${key}: ${value}`).join("\n");
+}
+
+function importanceLabel(value) {
+    return {
+        high: "高优先级",
+        low: "低优先级",
+        normal: "普通",
+        all: "全部",
+    }[value] || "普通";
+}
+
+function formatBytes(value) {
+    const size = Number(value) || 0;
+    if (size < 1024) {
+        return `${size} B`;
+    }
+    if (size < 1024 * 1024) {
+        return `${(size / 1024).toFixed(1)} KB`;
+    }
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function escapeHtml(value) {
+    return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll("\"", "&quot;")
+        .replaceAll("'", "&#39;");
 }
 
 

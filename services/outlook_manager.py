@@ -1,5 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import base64
 import email
 import imaplib
 import re
@@ -12,6 +13,7 @@ from email.utils import getaddresses, parseaddr, parsedate_to_datetime
 from html import unescape
 from threading import Lock
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -19,8 +21,11 @@ TOKEN_URL_LIVE = "https://login.live.com/oauth20_token.srf"
 TOKEN_URL_GRAPH = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
 TOKEN_URL_IMAP = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
 
-GRAPH_MESSAGES_URL = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages"
+GRAPH_MESSAGES_URL = "https://graph.microsoft.com/v1.0/me/mailFolders/{folder_id}/messages"
 GRAPH_MESSAGE_URL = "https://graph.microsoft.com/v1.0/me/messages/{message_id}"
+GRAPH_MESSAGE_MOVE_URL = "https://graph.microsoft.com/v1.0/me/messages/{message_id}/move"
+GRAPH_MESSAGE_ATTACHMENTS_URL = "https://graph.microsoft.com/v1.0/me/messages/{message_id}/attachments"
+GRAPH_MAIL_FOLDERS_URL = "https://graph.microsoft.com/v1.0/me/mailFolders"
 GRAPH_PROFILE_URL = "https://graph.microsoft.com/v1.0/me"
 
 IMAP_SERVER_OLD = "outlook.office365.com"
@@ -31,10 +36,55 @@ METHOD_IMAP_OLD = "imap_old"
 METHOD_IMAP_NEW = "imap_new"
 METHOD_GRAPH = "graph_api"
 
-FLAGS_PATTERN = re.compile(rb"FLAGS \((?P<flags>[^)]*)\)")
-TAG_PATTERN = re.compile(r"<[^>]+>")
-IMAP_SUMMARY_FETCH_QUERY = "(FLAGS BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)])"
+DEFAULT_FOLDER = "INBOX"
+DEFAULT_READ_STATE = "all"
+DEFAULT_IMPORTANCE = "all"
+DEFAULT_SORT_ORDER = "desc"
 TOKEN_CACHE_DEFAULT_TTL_SECONDS = 300
+
+FLAGS_PATTERN = re.compile(rb"FLAGS \((?P<flags>[^)]*)\)")
+IMAP_LIST_PATTERN = re.compile(rb'\((?P<flags>[^)]*)\)\s+"(?P<delimiter>[^"]*)"\s+(?P<name>.+)')
+TAG_PATTERN = re.compile(r"<[^>]+>")
+SCRIPT_STYLE_PATTERN = re.compile(r"(?is)<(script|style).*?>.*?</\1>")
+HTML_BREAK_PATTERN = re.compile(
+    r"(?is)</?(?:br|p|div|section|article|header|footer|li|tr|table|blockquote|h[1-6]|hr)[^>]*>"
+)
+IMAP_SUMMARY_FETCH_QUERY = "(FLAGS BODY.PEEK[])"
+
+GRAPH_WELL_KNOWN_FOLDERS = {
+    "inbox": {"label": "收件箱", "kind": "inbox"},
+    "archive": {"label": "归档", "kind": "archive"},
+    "deleteditems": {"label": "已删除", "kind": "trash"},
+    "drafts": {"label": "草稿箱", "kind": "drafts"},
+    "junkemail": {"label": "垃圾邮件", "kind": "junk"},
+    "sentitems": {"label": "已发送", "kind": "sent"},
+}
+
+FOLDER_KIND_ALIASES = {
+    "inbox": "inbox",
+    "archive": "archive",
+    "deleteditems": "trash",
+    "deleted": "trash",
+    "trash": "trash",
+    "drafts": "drafts",
+    "junkemail": "junk",
+    "junk": "junk",
+    "spam": "junk",
+    "sentitems": "sent",
+    "sent": "sent",
+}
+
+IMAP_SPECIAL_USE_ALIASES = {
+    "\\inbox": "inbox",
+    "\\archive": "archive",
+    "\\trash": "trash",
+    "\\deleted": "trash",
+    "\\drafts": "drafts",
+    "\\junk": "junk",
+    "\\spam": "junk",
+    "\\sent": "sent",
+    "\\sentmail": "sent",
+}
 
 
 @dataclass(slots=True)
@@ -47,6 +97,14 @@ class MailboxConfig:
     top: int = 10
     unread_only: bool = False
     keyword: str | None = None
+    folder: str = DEFAULT_FOLDER
+    page: int = 1
+    page_size: int = 20
+    read_state: str = DEFAULT_READ_STATE
+    has_attachments_only: bool = False
+    flagged_only: bool = False
+    importance: str = DEFAULT_IMPORTANCE
+    sort_order: str = DEFAULT_SORT_ORDER
 
 
 class MailboxError(RuntimeError):
@@ -71,6 +129,184 @@ class TokenCacheEntry:
     expires_at: datetime
 
 
+@dataclass(slots=True)
+class MailboxFolder:
+    id: str
+    name: str
+    display_name: str
+    total: int = 0
+    unread: int = 0
+    is_default: bool = False
+    kind: str = "custom"
+
+
+@dataclass(slots=True)
+class AttachmentSummary:
+    id: str
+    name: str
+    content_type: str
+    size: int
+    is_inline: bool = False
+
+
+@dataclass(slots=True)
+class MailboxQuery:
+    method: str
+    top: int = 10
+    unread_only: bool = False
+    keyword: str = ""
+    folder: str = DEFAULT_FOLDER
+    page: int = 1
+    page_size: int = 20
+    read_state: str = DEFAULT_READ_STATE
+    has_attachments_only: bool = False
+    flagged_only: bool = False
+    importance: str = DEFAULT_IMPORTANCE
+    sort_order: str = DEFAULT_SORT_ORDER
+
+
+@dataclass(slots=True)
+class MessageSummary:
+    method: str
+    message_id: str
+    subject: str
+    sender: str
+    sender_name: str
+    received_at: str
+    is_read: bool
+    has_attachments: bool
+    preview: str
+    source: str
+    folder: str = DEFAULT_FOLDER
+    internet_message_id: str = ""
+    is_flagged: bool = False
+    importance: str = "normal"
+    conversation_id: str = ""
+
+
+@dataclass(slots=True)
+class MessageDetailRequest:
+    method: str
+    message_id: str
+    folder: str = DEFAULT_FOLDER
+
+
+@dataclass(slots=True)
+class ReadStateUpdateRequest:
+    method: str
+    message_id: str
+    is_read: bool
+    folder: str = DEFAULT_FOLDER
+
+
+@dataclass(slots=True)
+class FlagStateUpdateRequest:
+    method: str
+    message_id: str
+    is_flagged: bool
+    folder: str = DEFAULT_FOLDER
+
+
+@dataclass(slots=True)
+class MessageMoveRequest:
+    method: str
+    message_id: str
+    destination_folder: str
+    folder: str = DEFAULT_FOLDER
+
+
+@dataclass(slots=True)
+class MessageDeleteRequest:
+    method: str
+    message_id: str
+    folder: str = DEFAULT_FOLDER
+
+
+@dataclass(slots=True)
+class MessageDetail(MessageSummary):
+    body_text: str = ""
+    body_html: str | None = None
+    to_recipients: list[str] = field(default_factory=list)
+    cc_recipients: list[str] = field(default_factory=list)
+    bcc_recipients: list[str] = field(default_factory=list)
+    headers: dict[str, str] = field(default_factory=dict)
+    attachments: list[AttachmentSummary] = field(default_factory=list)
+    conversation_id: str = ""
+
+
+@dataclass(slots=True)
+class MessageListResult:
+    method: str
+    total: int
+    returned: int
+    messages: list[MessageSummary] = field(default_factory=list)
+    folder: str = DEFAULT_FOLDER
+    page: int = 1
+    page_size: int = 20
+    total_pages: int = 0
+    has_prev: bool = False
+    has_next: bool = False
+
+    def __len__(self) -> int:
+        return len(self.messages)
+
+
+@dataclass(slots=True)
+class MethodOverview:
+    method: str
+    label: str
+    healthy: bool
+    status: str
+    message: str
+    message_count: int = 0
+    latest_subject: str = ""
+    latest_sender: str = ""
+
+
+@dataclass(slots=True)
+class MailboxOverview:
+    email: str
+    checked_at: str
+    methods: list[MethodOverview] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ReadStateUpdateResult:
+    method: str
+    message_id: str
+    is_read: bool
+    status: str
+    source: str
+
+
+@dataclass(slots=True)
+class FlagStateUpdateResult:
+    method: str
+    message_id: str
+    is_flagged: bool
+    status: str
+    source: str
+
+
+@dataclass(slots=True)
+class MessageMoveResult:
+    method: str
+    message_id: str
+    source_folder: str
+    destination_folder: str
+    status: str
+    source: str
+
+
+@dataclass(slots=True)
+class MessageDeleteResult:
+    method: str
+    message_id: str
+    folder: str
+    status: str
+    source: str
+
+
 class OutlookMailboxManager:
     METHOD_LABELS = {
         METHOD_IMAP_OLD: "旧版 IMAP",
@@ -90,7 +326,12 @@ class OutlookMailboxManager:
             future_map = {
                 executor.submit(
                     self.list_messages,
-                    replace(config, top=min(max(config.top, 1), 5)),
+                    replace(
+                        config,
+                        top=min(max(config.top, 1), 5),
+                        page=1,
+                        page_size=min(max(config.top, 1), 5),
+                    ),
                     method,
                 ): method
                 for method in self.METHODS
@@ -104,6 +345,7 @@ class OutlookMailboxManager:
                     "status": "error",
                     "count": 0,
                     "latest_subject": "",
+                    "latest_sender": "",
                     "error": "",
                 }
                 try:
@@ -112,6 +354,7 @@ class OutlookMailboxManager:
                     card["count"] = len(messages)
                     if messages:
                         card["latest_subject"] = messages[0]["subject"]
+                        card["latest_sender"] = messages[0]["sender"]
                 except Exception as exc:  # pragma: no cover - 真实网络分支
                     card["error"] = str(exc)
                 cards.append(card)
@@ -123,11 +366,15 @@ class OutlookMailboxManager:
             "cards": cards,
         }
 
-    def list_messages(
-        self,
-        config: MailboxConfig,
-        method: str | None = None,
-    ) -> list[dict[str, Any]]:
+    def list_folders(self, config: MailboxConfig, method: str | None = None) -> list[dict[str, Any]]:
+        target_method = method or config.default_method
+        if target_method == METHOD_GRAPH:
+            return self._list_folders_graph(config)
+        if target_method in {METHOD_IMAP_OLD, METHOD_IMAP_NEW}:
+            return self._list_folders_imap(config, target_method)
+        raise MailboxError(f"不支持的方法: {target_method}")
+
+    def list_messages(self, config: MailboxConfig, method: str | None = None) -> list[dict[str, Any]]:
         target_method = method or config.default_method
         if target_method == METHOD_IMAP_OLD:
             return self._list_messages_imap(config, METHOD_IMAP_OLD)
@@ -158,47 +405,77 @@ class OutlookMailboxManager:
             raise MailboxError("无法从授权信息中解析邮箱账号")
         return email_address
 
-    def get_message_detail(
-        self,
-        config: MailboxConfig,
-        method: str,
-        message_id: str,
-    ) -> dict[str, Any]:
+    def get_message_detail(self, config: MailboxConfig, method: str, message_id: str) -> dict[str, Any]:
         if method == METHOD_GRAPH:
             return self._get_message_detail_graph(config, message_id)
         if method in {METHOD_IMAP_OLD, METHOD_IMAP_NEW}:
             return self._get_message_detail_imap(config, method, message_id)
         raise MailboxError(f"不支持的方法: {method}")
 
-    def set_read_state(
-        self,
-        config: MailboxConfig,
-        method: str,
-        message_id: str,
-        is_read: bool,
-    ) -> dict[str, Any]:
+    def set_read_state(self, config: MailboxConfig, method: str, message_id: str, is_read: bool) -> dict[str, Any]:
         if method == METHOD_GRAPH:
             return self._set_read_state_graph(config, message_id, is_read)
         if method in {METHOD_IMAP_OLD, METHOD_IMAP_NEW}:
             return self._set_read_state_imap(config, method, message_id, is_read)
         raise MailboxError(f"不支持的方法: {method}")
 
+    def set_flag_state(self, config: MailboxConfig, method: str, message_id: str, is_flagged: bool) -> dict[str, Any]:
+        if method == METHOD_GRAPH:
+            return self._set_flag_state_graph(config, message_id, is_flagged)
+        if method in {METHOD_IMAP_OLD, METHOD_IMAP_NEW}:
+            return self._set_flag_state_imap(config, method, message_id, is_flagged)
+        raise MailboxError(f"不支持的方法: {method}")
+
+    def move_message(
+        self,
+        config: MailboxConfig,
+        method: str,
+        message_id: str,
+        destination_folder: str,
+    ) -> dict[str, Any]:
+        if method == METHOD_GRAPH:
+            return self._move_message_graph(config, message_id, destination_folder)
+        if method in {METHOD_IMAP_OLD, METHOD_IMAP_NEW}:
+            return self._move_message_imap(config, method, message_id, destination_folder)
+        raise MailboxError(f"不支持的方法: {method}")
+
+    def delete_message(self, config: MailboxConfig, method: str, message_id: str) -> dict[str, Any]:
+        if method == METHOD_GRAPH:
+            return self._delete_message_graph(config, message_id)
+        if method in {METHOD_IMAP_OLD, METHOD_IMAP_NEW}:
+            return self._delete_message_imap(config, method, message_id)
+        raise MailboxError(f"不支持的方法: {method}")
+
+    def _list_folders_graph(self, config: MailboxConfig) -> list[dict[str, Any]]:
+        token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
+        response = requests.get(
+            GRAPH_MAIL_FOLDERS_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            params={"$top": 200, "$select": "id,displayName,totalItemCount,unreadItemCount"},
+            proxies=self._build_requests_proxies(config.proxy),
+            timeout=30,
+        )
+        self._raise_for_response(response, "Graph API 读取文件夹失败")
+        folders = [self._normalize_graph_folder(item) for item in response.json().get("value", [])]
+        return self._ensure_default_graph_folders(folders)
+
     def _list_messages_graph(self, config: MailboxConfig) -> list[dict[str, Any]]:
         token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
-        window = max(config.top * 4, 25)
+        window = min(max(max(config.page * config.page_size, config.top) * 4, 50), 500)
+        filters = self._build_graph_filters(config)
         params: dict[str, Any] = {
             "$top": window,
             "$select": (
-                "id,subject,from,receivedDateTime,isRead,"
-                "hasAttachments,bodyPreview,internetMessageId"
+                "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview,"
+                "internetMessageId,flag,importance,conversationId"
             ),
-            "$orderby": "receivedDateTime desc",
+            "$orderby": f"receivedDateTime {self._normalize_sort_order(config.sort_order)}",
         }
-        if config.unread_only:
-            params["$filter"] = "isRead eq false"
+        if filters:
+            params["$filter"] = " and ".join(filters)
 
         response = requests.get(
-            GRAPH_MESSAGES_URL,
+            GRAPH_MESSAGES_URL.format(folder_id=quote(self._normalize_graph_folder_id(config.folder), safe="")),
             headers={
                 "Authorization": f"Bearer {token}",
                 "Prefer": "outlook.body-content-type='text'",
@@ -209,8 +486,8 @@ class OutlookMailboxManager:
         )
         self._raise_for_response(response, "Graph API 读取邮件失败")
 
-        messages = [self._normalize_graph_summary(item) for item in response.json().get("value", [])]
-        return self._filter_messages(messages, config.keyword, config.top)
+        messages = [self._normalize_graph_summary(item, folder=config.folder) for item in response.json().get("value", [])]
+        return self._filter_messages(messages, config)
 
     def _get_message_detail_graph(self, config: MailboxConfig, message_id: str) -> dict[str, Any]:
         token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
@@ -219,36 +496,44 @@ class OutlookMailboxManager:
             headers={"Authorization": f"Bearer {token}"},
             params={
                 "$select": (
-                    "id,subject,from,toRecipients,ccRecipients,bccRecipients,"
-                    "receivedDateTime,isRead,hasAttachments,body,bodyPreview,"
-                    "internetMessageId"
-                )
+                    "id,subject,from,toRecipients,ccRecipients,bccRecipients,receivedDateTime,"
+                    "isRead,hasAttachments,body,bodyPreview,internetMessageId,flag,"
+                    "importance,conversationId,internetMessageHeaders"
+                ),
+                "$expand": "attachments($select=id,name,contentType,size,isInline)",
             },
             proxies=self._build_requests_proxies(config.proxy),
             timeout=30,
         )
         self._raise_for_response(response, "Graph API 读取邮件详情失败")
         item = response.json()
-        body_text = self._normalize_text(item.get("body", {}).get("content", ""))
-        detail = self._normalize_graph_summary(item)
+        body_payload = item.get("body", {}) if isinstance(item.get("body"), dict) else {}
+        body_raw = str(body_payload.get("content", "") or "")
+        body_type = str(body_payload.get("contentType", "") or "").casefold()
+        body_html = self._sanitize_html(body_raw) if body_type == "html" else None
+        body_text = self._normalize_text(body_raw) if body_raw else self._normalize_text(item.get("bodyPreview", ""))
+        detail = self._normalize_graph_summary(item, folder=config.folder)
         detail.update(
             {
                 "body": body_text,
                 "body_text": body_text,
+                "body_html": body_html,
                 "to": self._normalize_graph_recipients(item.get("toRecipients", [])),
                 "cc": self._normalize_graph_recipients(item.get("ccRecipients", [])),
                 "bcc": self._normalize_graph_recipients(item.get("bccRecipients", [])),
+                "headers": self._normalize_graph_headers(item.get("internetMessageHeaders", [])),
                 "internet_message_id": item.get("internetMessageId", ""),
+                "conversation_id": item.get("conversationId", ""),
+                "attachments": [
+                    self._normalize_graph_attachment(attachment)
+                    for attachment in item.get("attachments", [])
+                    if isinstance(attachment, dict)
+                ],
             }
         )
         return detail
 
-    def _set_read_state_graph(
-        self,
-        config: MailboxConfig,
-        message_id: str,
-        is_read: bool,
-    ) -> dict[str, Any]:
+    def _set_read_state_graph(self, config: MailboxConfig, message_id: str, is_read: bool) -> dict[str, Any]:
         token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
         response = requests.patch(
             GRAPH_MESSAGE_URL.format(message_id=message_id),
@@ -268,47 +553,105 @@ class OutlookMailboxManager:
             "status": "updated",
         }
 
+    def _set_flag_state_graph(self, config: MailboxConfig, message_id: str, is_flagged: bool) -> dict[str, Any]:
+        token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
+        response = requests.patch(
+            GRAPH_MESSAGE_URL.format(message_id=message_id),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={"flag": {"flagStatus": "flagged" if is_flagged else "notFlagged"}},
+            proxies=self._build_requests_proxies(config.proxy),
+            timeout=30,
+        )
+        self._raise_for_response(response, "Graph API 更新星标状态失败")
+        return {
+            "message_id": message_id,
+            "method": METHOD_GRAPH,
+            "is_flagged": is_flagged,
+            "status": "updated",
+        }
+
+    def _move_message_graph(
+        self,
+        config: MailboxConfig,
+        message_id: str,
+        destination_folder: str,
+    ) -> dict[str, Any]:
+        token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
+        resolved_destination = self._resolve_graph_destination_id(config, destination_folder)
+        response = requests.post(
+            GRAPH_MESSAGE_MOVE_URL.format(message_id=message_id),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={"destinationId": resolved_destination},
+            proxies=self._build_requests_proxies(config.proxy),
+            timeout=30,
+        )
+        self._raise_for_response(response, "Graph API 移动邮件失败")
+        return {
+            "message_id": message_id,
+            "method": METHOD_GRAPH,
+            "source_folder": config.folder,
+            "destination_folder": destination_folder,
+            "status": "moved",
+        }
+
+    def _delete_message_graph(self, config: MailboxConfig, message_id: str) -> dict[str, Any]:
+        token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
+        response = requests.delete(
+            GRAPH_MESSAGE_URL.format(message_id=message_id),
+            headers={"Authorization": f"Bearer {token}"},
+            proxies=self._build_requests_proxies(config.proxy),
+            timeout=30,
+        )
+        self._raise_for_response(response, "Graph API 删除邮件失败")
+        return {
+            "message_id": message_id,
+            "method": METHOD_GRAPH,
+            "folder": config.folder,
+            "status": "deleted",
+        }
+
+    def _list_folders_imap(self, config: MailboxConfig, method: str) -> list[dict[str, Any]]:
+        token = self._get_access_token_for_imap(config, method)
+        connection = self._open_imap_connection(config.email, token, method)
+        try:
+            return self._list_imap_folders_from_connection(connection)
+        finally:
+            self._logout_imap(connection)
+
     def _list_messages_imap(self, config: MailboxConfig, method: str) -> list[dict[str, Any]]:
         token = self._get_access_token_for_imap(config, method)
         connection = self._open_imap_connection(config.email, token, method)
+        folder_name = self._normalize_imap_folder_name(config.folder)
 
         try:
-            status, _ = connection.select("INBOX")
-            if status != "OK":
-                raise MailboxError("无法选择收件箱")
-
-            search_criteria = ["UNSEEN"] if config.unread_only else ["ALL"]
+            self._select_imap_folder(connection, folder_name)
+            search_criteria = self._build_imap_search_criteria(config)
             status, data = connection.uid("SEARCH", None, *search_criteria)
             if status != "OK" or not data or not data[0]:
                 return []
 
             uid_list = [item for item in data[0].split() if item]
-            window = max(config.top * 4, 25)
+            window = min(max(max(config.page * config.page_size, config.top) * 4, 50), 500)
             target_uids = list(reversed(uid_list[-window:]))
-
-            messages = [self._build_imap_summary(connection, uid, method) for uid in target_uids]
+            messages = [self._build_imap_summary(connection, uid, method, folder_name) for uid in target_uids]
             messages = [item for item in messages if item]
-            return self._filter_messages(messages, config.keyword, config.top)
+            return self._filter_messages(messages, config)
         finally:
-            try:
-                connection.logout()
-            except Exception:  # pragma: no cover - 容错回收
-                pass
+            self._logout_imap(connection)
 
-    def _get_message_detail_imap(
-        self,
-        config: MailboxConfig,
-        method: str,
-        message_id: str,
-    ) -> dict[str, Any]:
+    def _get_message_detail_imap(self, config: MailboxConfig, method: str, message_id: str) -> dict[str, Any]:
         token = self._get_access_token_for_imap(config, method)
         connection = self._open_imap_connection(config.email, token, method)
+        folder_name = self._normalize_imap_folder_name(config.folder)
 
         try:
-            status, _ = connection.select("INBOX")
-            if status != "OK":
-                raise MailboxError("无法选择收件箱")
-
+            self._select_imap_folder(connection, folder_name)
             status, data = connection.uid("FETCH", message_id, "(FLAGS BODY.PEEK[])")
             if status != "OK" or not data:
                 raise MailboxError("读取邮件详情失败")
@@ -316,24 +659,25 @@ class OutlookMailboxManager:
             raw_message = self._extract_raw_message(data)
             flags = self._extract_flags(data)
             message = email.message_from_bytes(raw_message)
-            body_text = self._extract_text_body(message)
-            detail = self._normalize_imap_message(message_id, message, flags, method)
+            body_text, body_html = self._extract_message_bodies(message)
+            detail = self._normalize_imap_message(message_id, message, flags, method, folder_name)
             detail.update(
                 {
                     "body": body_text,
                     "body_text": body_text,
+                    "body_html": body_html,
                     "to": self._split_addresses(message.get_all("To", [])),
                     "cc": self._split_addresses(message.get_all("Cc", [])),
                     "bcc": self._split_addresses(message.get_all("Bcc", [])),
+                    "headers": self._normalize_message_headers(message),
                     "internet_message_id": self._decode_header_value(message.get("Message-ID", "")),
+                    "conversation_id": self._decode_header_value(message.get("Thread-Index", "")),
+                    "attachments": self._extract_imap_attachments(message),
                 }
             )
             return detail
         finally:
-            try:
-                connection.logout()
-            except Exception:  # pragma: no cover - 容错回收
-                pass
+            self._logout_imap(connection)
 
     def _set_read_state_imap(
         self,
@@ -344,17 +688,14 @@ class OutlookMailboxManager:
     ) -> dict[str, Any]:
         token = self._get_access_token_for_imap(config, method)
         connection = self._open_imap_connection(config.email, token, method)
+        folder_name = self._normalize_imap_folder_name(config.folder)
 
         try:
-            status, _ = connection.select("INBOX")
-            if status != "OK":
-                raise MailboxError("无法选择收件箱")
-
+            self._select_imap_folder(connection, folder_name)
             operation = "+FLAGS" if is_read else "-FLAGS"
             status, _ = connection.uid("STORE", message_id, operation, "(\\Seen)")
             if status != "OK":
                 raise MailboxError("更新已读状态失败")
-
             return {
                 "message_id": message_id,
                 "method": method,
@@ -362,26 +703,116 @@ class OutlookMailboxManager:
                 "status": "updated",
             }
         finally:
-            try:
-                connection.logout()
-            except Exception:  # pragma: no cover - 容错回收
-                pass
+            self._logout_imap(connection)
+
+    def _set_flag_state_imap(
+        self,
+        config: MailboxConfig,
+        method: str,
+        message_id: str,
+        is_flagged: bool,
+    ) -> dict[str, Any]:
+        token = self._get_access_token_for_imap(config, method)
+        connection = self._open_imap_connection(config.email, token, method)
+        folder_name = self._normalize_imap_folder_name(config.folder)
+
+        try:
+            self._select_imap_folder(connection, folder_name)
+            operation = "+FLAGS" if is_flagged else "-FLAGS"
+            status, _ = connection.uid("STORE", message_id, operation, "(\\Flagged)")
+            if status != "OK":
+                raise MailboxError("更新星标状态失败")
+            return {
+                "message_id": message_id,
+                "method": method,
+                "is_flagged": is_flagged,
+                "status": "updated",
+            }
+        finally:
+            self._logout_imap(connection)
+
+    def _move_message_imap(
+        self,
+        config: MailboxConfig,
+        method: str,
+        message_id: str,
+        destination_folder: str,
+    ) -> dict[str, Any]:
+        token = self._get_access_token_for_imap(config, method)
+        connection = self._open_imap_connection(config.email, token, method)
+        folder_name = self._normalize_imap_folder_name(config.folder)
+
+        try:
+            self._select_imap_folder(connection, folder_name)
+            target_folder = self._resolve_imap_destination_folder(connection, destination_folder)
+            status, _ = connection.uid("COPY", message_id, self._quote_imap_mailbox(target_folder))
+            if status != "OK":
+                raise MailboxError("移动邮件失败")
+            status, _ = connection.uid("STORE", message_id, "+FLAGS", "(\\Deleted)")
+            if status != "OK":
+                raise MailboxError("移动邮件失败")
+            expunge_status, _ = connection.expunge()
+            if expunge_status != "OK":
+                raise MailboxError("移动邮件后执行 expunge 失败")
+            return {
+                "message_id": message_id,
+                "method": method,
+                "source_folder": folder_name,
+                "destination_folder": target_folder,
+                "status": "moved",
+            }
+        finally:
+            self._logout_imap(connection)
+
+    def _delete_message_imap(self, config: MailboxConfig, method: str, message_id: str) -> dict[str, Any]:
+        token = self._get_access_token_for_imap(config, method)
+        connection = self._open_imap_connection(config.email, token, method)
+        folder_name = self._normalize_imap_folder_name(config.folder)
+
+        try:
+            self._select_imap_folder(connection, folder_name)
+            trash_folder = self._resolve_imap_destination_folder(connection, "trash", allow_missing=True)
+            if trash_folder and trash_folder.casefold() != folder_name.casefold():
+                copy_status, _ = connection.uid("COPY", message_id, self._quote_imap_mailbox(trash_folder))
+                if copy_status == "OK":
+                    delete_status, _ = connection.uid("STORE", message_id, "+FLAGS", "(\\Deleted)")
+                    if delete_status != "OK":
+                        raise MailboxError("删除邮件失败")
+                    connection.expunge()
+                    return {
+                        "message_id": message_id,
+                        "method": method,
+                        "folder": folder_name,
+                        "status": "moved_to_trash",
+                    }
+
+            status, _ = connection.uid("STORE", message_id, "+FLAGS", "(\\Deleted)")
+            if status != "OK":
+                raise MailboxError("删除邮件失败")
+            connection.expunge()
+            return {
+                "message_id": message_id,
+                "method": method,
+                "folder": folder_name,
+                "status": "deleted",
+            }
+        finally:
+            self._logout_imap(connection)
 
     def _build_imap_summary(
         self,
         connection: imaplib.IMAP4_SSL,
         uid: bytes,
         method: str,
+        folder_name: str,
     ) -> dict[str, Any] | None:
-        # 列表刷新只需要摘要信息，避免把整封邮件正文都拉回来解析。
         status, data = connection.uid("FETCH", uid, IMAP_SUMMARY_FETCH_QUERY)
         if status != "OK" or not data:
             return None
-
         raw_message = self._extract_raw_message(data)
         flags = self._extract_flags(data)
         message = email.message_from_bytes(raw_message)
-        return self._normalize_imap_message(uid.decode("utf-8"), message, flags, method)
+        return self._normalize_imap_message(uid.decode("utf-8"), message, flags, method, folder_name)
 
     def _normalize_imap_message(
         self,
@@ -389,10 +820,10 @@ class OutlookMailboxManager:
         message: Message,
         flags: set[str],
         method: str,
+        folder_name: str,
     ) -> dict[str, Any]:
         sender_name, sender_address = parseaddr(self._decode_header_value(message.get("From", "")))
-        preview = self._summarize_text(self._extract_text_body(message))
-        received_at = self._normalize_received_at(message.get("Date", ""))
+        body_text, _ = self._extract_message_bodies(message)
         return {
             "id": message_id,
             "message_id": message_id,
@@ -401,15 +832,20 @@ class OutlookMailboxManager:
             "subject": self._decode_header_value(message.get("Subject", "无主题")) or "无主题",
             "sender": sender_address or sender_name or "未知发件人",
             "sender_name": sender_name,
-            "received_at": received_at,
+            "received_at": self._normalize_received_at(message.get("Date", "")),
             "is_read": "\\Seen" in flags,
-            "has_attachments": any(part.get_filename() for part in message.walk()),
-            "preview": preview,
+            "has_attachments": bool(self._extract_imap_attachments(message)),
+            "preview": self._summarize_text(body_text),
             "internet_message_id": self._decode_header_value(message.get("Message-ID", "")),
+            "folder": folder_name,
+            "is_flagged": "\\Flagged" in flags,
+            "importance": self._extract_importance_from_message(message),
+            "conversation_id": self._decode_header_value(message.get("Thread-Index", "")),
         }
 
-    def _normalize_graph_summary(self, item: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_graph_summary(self, item: dict[str, Any], *, folder: str) -> dict[str, Any]:
         email_address = item.get("from", {}).get("emailAddress", {})
+        flag = item.get("flag", {}) if isinstance(item.get("flag"), dict) else {}
         message_id = item.get("id", "")
         return {
             "id": message_id,
@@ -424,6 +860,10 @@ class OutlookMailboxManager:
             "has_attachments": bool(item.get("hasAttachments")),
             "preview": self._normalize_text(item.get("bodyPreview", "")),
             "internet_message_id": item.get("internetMessageId", ""),
+            "folder": folder or DEFAULT_FOLDER,
+            "is_flagged": flag.get("flagStatus") == "flagged",
+            "importance": self._normalize_importance(item.get("importance")),
+            "conversation_id": item.get("conversationId", ""),
         }
 
     def _get_access_token_for_imap(self, config: MailboxConfig, method: str) -> str:
@@ -497,13 +937,7 @@ class OutlookMailboxManager:
         cached_token = self._get_cached_access_token(cache_key)
         if cached_token:
             return cached_token
-
-        response = requests.post(
-            url,
-            data=payload,
-            proxies=self._build_requests_proxies(proxy),
-            timeout=30,
-        )
+        response = requests.post(url, data=payload, proxies=self._build_requests_proxies(proxy), timeout=30)
         self._raise_for_response(response, request_error_message)
         response_payload = response.json()
         token = response_payload.get("access_token")
@@ -532,12 +966,7 @@ class OutlookMailboxManager:
                 return None
             return entry.access_token
 
-    def _store_cached_access_token(
-        self,
-        cache_key: tuple[str, str, str, str],
-        token: str,
-        expires_in: Any,
-    ) -> None:
+    def _store_cached_access_token(self, cache_key: tuple[str, str, str, str], token: str, expires_in: Any) -> None:
         ttl_seconds = self._normalize_token_ttl(expires_in)
         with self._token_cache_lock:
             self._token_cache[cache_key] = TokenCacheEntry(
@@ -551,7 +980,6 @@ class OutlookMailboxManager:
             raw_ttl = int(expires_in)
         except (TypeError, ValueError):
             raw_ttl = TOKEN_CACHE_DEFAULT_TTL_SECONDS
-
         raw_ttl = max(raw_ttl, 10)
         safety_buffer = min(60, max(raw_ttl // 10, 5))
         return max(raw_ttl - safety_buffer, 5)
@@ -577,7 +1005,6 @@ class OutlookMailboxManager:
     def _raise_for_response(response: requests.Response, message: str) -> None:
         if response.status_code < 400:
             return
-
         body = response.text[:300]
         if "service abuse mode" in body:
             raise MailboxError(f"{message}: 账号疑似进入风控模式")
@@ -608,6 +1035,97 @@ class OutlookMailboxManager:
         except Exception:
             return value
 
+    def _normalize_graph_folder(self, item: dict[str, Any]) -> dict[str, Any]:
+        folder_id = str(item.get("id", "") or "")
+        display_name = str(item.get("displayName", "") or folder_id or DEFAULT_FOLDER)
+        kind = self._resolve_folder_kind(display_name)
+        return {
+            "id": folder_id,
+            "name": kind if kind != "custom" else display_name,
+            "display_name": display_name,
+            "total": int(item.get("totalItemCount", 0) or 0),
+            "unread": int(item.get("unreadItemCount", 0) or 0),
+            "is_default": kind == "inbox",
+            "kind": kind,
+        }
+
+    def _ensure_default_graph_folders(self, folders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        seen_ids = {str(item.get("id", "")).casefold() for item in folders}
+        next_folders = list(folders)
+        for folder_id, definition in GRAPH_WELL_KNOWN_FOLDERS.items():
+            if folder_id.casefold() in seen_ids:
+                continue
+            next_folders.append(
+                {
+                    "id": folder_id,
+                    "name": definition["kind"],
+                    "display_name": definition["label"],
+                    "total": 0,
+                    "unread": 0,
+                    "is_default": definition["kind"] == "inbox",
+                    "kind": definition["kind"],
+                }
+            )
+        return self._sort_folders(next_folders)
+
+    def _list_imap_folders_from_connection(self, connection: imaplib.IMAP4_SSL) -> list[dict[str, Any]]:
+        status, data = connection.list()
+        if status != "OK":
+            raise MailboxError("读取 IMAP 文件夹失败")
+        folders = [item for line in data or [] if isinstance(line, bytes) and (item := self._normalize_imap_folder(line))]
+        return self._ensure_default_imap_folders(folders)
+
+    def _normalize_imap_folder(self, line: bytes) -> dict[str, Any] | None:
+        match = IMAP_LIST_PATTERN.match(line)
+        if not match:
+            return None
+        flags = {item.decode("utf-8", "ignore").casefold() for item in match.group("flags").split()}
+        raw_name = match.group("name").decode("utf-8", "replace").strip().strip('"')
+        display_name = self._decode_imap_utf7(raw_name)
+        kind = self._resolve_folder_kind(display_name, flags=flags)
+        return {
+            "id": raw_name,
+            "name": kind if kind != "custom" else raw_name,
+            "display_name": display_name or raw_name,
+            "total": 0,
+            "unread": 0,
+            "is_default": kind == "inbox",
+            "kind": kind,
+        }
+
+    def _ensure_default_imap_folders(self, folders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if any(str(item.get("kind", "")).casefold() == "inbox" for item in folders):
+            return self._sort_folders(folders)
+        return self._sort_folders(
+            [
+                {
+                    "id": DEFAULT_FOLDER,
+                    "name": "inbox",
+                    "display_name": DEFAULT_FOLDER,
+                    "total": 0,
+                    "unread": 0,
+                    "is_default": True,
+                    "kind": "inbox",
+                },
+                *folders,
+            ]
+        )
+
+    def _resolve_folder_kind(self, value: str, *, flags: set[str] | None = None) -> str:
+        if flags:
+            for flag in flags:
+                if flag in IMAP_SPECIAL_USE_ALIASES:
+                    return IMAP_SPECIAL_USE_ALIASES[flag]
+        normalized = value.strip().casefold().replace(" ", "")
+        return FOLDER_KIND_ALIASES.get(normalized, "custom")
+
+    def _sort_folders(self, folders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        order = {"inbox": 0, "sent": 1, "drafts": 2, "archive": 3, "trash": 4, "junk": 5, "custom": 99}
+        return sorted(
+            folders,
+            key=lambda item: (order.get(str(item.get("kind", "custom")), 99), str(item.get("display_name", "")).casefold()),
+        )
+
     @staticmethod
     def _normalize_graph_recipients(recipients: list[dict[str, Any]]) -> list[str]:
         values: list[str] = []
@@ -622,11 +1140,33 @@ class OutlookMailboxManager:
         return values
 
     @staticmethod
+    def _normalize_graph_headers(headers: list[dict[str, Any]]) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        for item in headers:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "") or "").strip()
+            value = str(item.get("value", "") or "").strip()
+            if name:
+                normalized[name] = value
+        return normalized
+
+    @staticmethod
+    def _normalize_graph_attachment(attachment: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": str(attachment.get("id", "") or ""),
+            "name": str(attachment.get("name", "") or ""),
+            "content_type": str(attachment.get("contentType", "") or ""),
+            "size": int(attachment.get("size", 0) or 0),
+            "is_inline": bool(attachment.get("isInline", False)),
+        }
+
+    @staticmethod
     def _split_addresses(values: list[str]) -> list[str]:
         addresses: list[str] = []
-        for _, address in getaddresses(values):
+        for name, address in getaddresses(values):
             if address:
-                addresses.append(address)
+                addresses.append(f"{name} <{address}>" if name else address)
         return addresses
 
     @staticmethod
@@ -637,29 +1177,48 @@ class OutlookMailboxManager:
         return cleaned[: limit - 1].rstrip() + "…"
 
     @staticmethod
-    def _normalize_text(value: str) -> str:
-        text = TAG_PATTERN.sub(" ", value)
-        return " ".join(unescape(text).split())
+    def _sanitize_html(value: str) -> str:
+        html = SCRIPT_STYLE_PATTERN.sub(" ", value or "")
+        html = re.sub(r"(?is)\son[a-z]+\s*=\s*(\"[^\"]*\"|'[^']*')", "", html)
+        return re.sub(r"(?i)javascript:", "", html)
 
-    def _filter_messages(
-        self,
-        messages: list[dict[str, Any]],
-        keyword: str | None,
-        top: int,
-    ) -> list[dict[str, Any]]:
-        if keyword:
-            needle = keyword.casefold()
-            messages = [
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        text = SCRIPT_STYLE_PATTERN.sub(" ", value or "")
+        text = HTML_BREAK_PATTERN.sub("\n", text)
+        text = TAG_PATTERN.sub(" ", text)
+        normalized_lines = [" ".join(unescape(line).split()) for line in text.splitlines()]
+        cleaned_lines = [line for line in normalized_lines if line]
+        return "\n".join(cleaned_lines)
+
+    def _filter_messages(self, messages: list[dict[str, Any]], config: MailboxConfig) -> list[dict[str, Any]]:
+        filtered = list(messages)
+        if config.keyword:
+            needle = config.keyword.casefold()
+            filtered = [
                 item
-                for item in messages
+                for item in filtered
                 if needle in f"{item['subject']} {item['sender']} {item['preview']}".casefold()
             ]
-        return messages[:top]
+        if config.has_attachments_only:
+            filtered = [item for item in filtered if bool(item.get("has_attachments"))]
+        if config.flagged_only:
+            filtered = [item for item in filtered if bool(item.get("is_flagged"))]
+        if config.importance != DEFAULT_IMPORTANCE:
+            filtered = [
+                item
+                for item in filtered
+                if self._normalize_importance(item.get("importance")) == self._normalize_importance(config.importance)
+            ]
+        reverse = self._normalize_sort_order(config.sort_order) == "desc"
+        filtered.sort(key=lambda item: str(item.get("received_at", "")), reverse=reverse)
+        start = max((config.page - 1) * config.page_size, 0)
+        end = start + config.page_size
+        return filtered[start:end]
 
     def _decode_header_value(self, header_value: Any) -> str:
         if not header_value:
             return ""
-
         fragments: list[str] = []
         for part, charset in decode_header(str(header_value)):
             if isinstance(part, bytes):
@@ -673,130 +1232,247 @@ class OutlookMailboxManager:
         return "".join(fragments).strip()
 
     def _extract_text_body(self, message: Message) -> str:
+        return self._extract_message_bodies(message)[0]
+
+    def _extract_message_bodies(self, message: Message) -> tuple[str, str | None]:
         if message.is_multipart():
             html_fallback = ""
             for part in message.walk():
                 content_type = part.get_content_type()
                 if part.get_content_disposition() == "attachment":
                     continue
-
                 payload = part.get_payload(decode=True)
                 if payload is None:
                     continue
-
                 charset = part.get_content_charset() or "utf-8"
                 try:
                     text = payload.decode(charset, "replace")
                 except LookupError:
                     text = payload.decode("utf-8", "replace")
-
                 if content_type == "text/plain":
-                    return self._normalize_text(text)
+                    return self._normalize_text(text), html_fallback or None
                 if content_type == "text/html" and not html_fallback:
-                    html_fallback = self._normalize_text(text)
-            return html_fallback
+                    html_fallback = self._sanitize_html(text)
+            return self._normalize_text(html_fallback), html_fallback or None
 
         payload = message.get_payload(decode=True)
         if payload is None:
             raw = message.get_payload()
-            return self._normalize_text(raw if isinstance(raw, str) else "")
+            raw_text = raw if isinstance(raw, str) else ""
+            normalized = self._normalize_text(raw_text)
+            if message.get_content_type() == "text/html":
+                return normalized, self._sanitize_html(raw_text)
+            return normalized, None
 
         charset = message.get_content_charset() or "utf-8"
         try:
-            return self._normalize_text(payload.decode(charset, "replace"))
+            decoded = payload.decode(charset, "replace")
         except LookupError:
-            return self._normalize_text(payload.decode("utf-8", "replace"))
+            decoded = payload.decode("utf-8", "replace")
+        normalized = self._normalize_text(decoded)
+        if message.get_content_type() == "text/html":
+            return normalized, self._sanitize_html(decoded)
+        return normalized, None
 
+    def _extract_imap_attachments(self, message: Message) -> list[dict[str, Any]]:
+        attachments: list[dict[str, Any]] = []
+        for index, part in enumerate(message.walk(), start=1):
+            file_name = part.get_filename()
+            disposition = (part.get_content_disposition() or "").casefold()
+            if not file_name and disposition != "attachment":
+                continue
+            payload = part.get_payload(decode=True) or b""
+            attachments.append(
+                {
+                    "id": f"part-{index}",
+                    "name": self._decode_header_value(file_name or f"attachment-{index}"),
+                    "content_type": part.get_content_type(),
+                    "size": len(payload),
+                    "is_inline": disposition == "inline",
+                }
+            )
+        return attachments
 
-@dataclass(slots=True)
-class MailboxQuery:
-    method: str
-    top: int = 10
-    unread_only: bool = False
-    keyword: str = ""
-    folder: str = "INBOX"
+    def _normalize_message_headers(self, message: Message) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        for key, value in message.items():
+            decoded_key = self._decode_header_value(key)
+            decoded_value = self._decode_header_value(value)
+            if not decoded_key:
+                continue
+            if decoded_key in normalized:
+                normalized[decoded_key] = f"{normalized[decoded_key]} | {decoded_value}"
+            else:
+                normalized[decoded_key] = decoded_value
+        return normalized
 
+    def _extract_importance_from_message(self, message: Message) -> str:
+        joined = " ".join(
+            value.casefold()
+            for value in [
+                self._decode_header_value(message.get("Importance", "")),
+                self._decode_header_value(message.get("Priority", "")),
+                self._decode_header_value(message.get("X-Priority", "")),
+            ]
+            if value
+        )
+        if "high" in joined or joined.startswith("1"):
+            return "high"
+        if "low" in joined or joined.startswith("5"):
+            return "low"
+        return "normal"
 
-@dataclass(slots=True)
-class MessageSummary:
-    method: str
-    message_id: str
-    subject: str
-    sender: str
-    sender_name: str
-    received_at: str
-    is_read: bool
-    has_attachments: bool
-    preview: str
-    source: str
-    folder: str = "INBOX"
-    internet_message_id: str = ""
+    @staticmethod
+    def _normalize_importance(value: Any) -> str:
+        normalized = str(value or "").strip().casefold()
+        if normalized in {"high", "normal", "low"}:
+            return normalized
+        if normalized in {"", DEFAULT_IMPORTANCE}:
+            return DEFAULT_IMPORTANCE
+        return "normal"
 
+    @staticmethod
+    def _normalize_sort_order(value: Any) -> str:
+        return "asc" if str(value or "").strip().casefold() == "asc" else "desc"
 
-@dataclass(slots=True)
-class MessageDetailRequest:
-    method: str
-    message_id: str
-    folder: str = "INBOX"
+    def _build_graph_filters(self, config: MailboxConfig) -> list[str]:
+        filters: list[str] = []
+        read_state = config.read_state
+        if config.unread_only and read_state == DEFAULT_READ_STATE:
+            read_state = "unread"
+        if read_state == "unread":
+            filters.append("isRead eq false")
+        elif read_state == "read":
+            filters.append("isRead eq true")
+        if config.has_attachments_only:
+            filters.append("hasAttachments eq true")
+        if config.flagged_only:
+            filters.append("flag/flagStatus eq 'flagged'")
+        importance = self._normalize_importance(config.importance)
+        if importance in {"high", "normal", "low"}:
+            filters.append(f"importance eq '{importance}'")
+        return filters
 
+    @staticmethod
+    def _normalize_graph_folder_id(folder: str) -> str:
+        normalized = str(folder or "").strip()
+        if not normalized or normalized == DEFAULT_FOLDER:
+            return "inbox"
+        lowered = normalized.casefold()
+        if lowered in GRAPH_WELL_KNOWN_FOLDERS:
+            return lowered
+        for key, definition in GRAPH_WELL_KNOWN_FOLDERS.items():
+            if definition["kind"] == lowered:
+                return key
+        return normalized
 
-@dataclass(slots=True)
-class ReadStateUpdateRequest:
-    method: str
-    message_id: str
-    is_read: bool
-    folder: str = "INBOX"
+    def _resolve_graph_destination_id(self, config: MailboxConfig, destination_folder: str) -> str:
+        target = str(destination_folder or "").strip()
+        if not target:
+            raise MailboxError("缺少目标文件夹", code="invalid_destination_folder")
+        folders = self._list_folders_graph(config)
+        target_key = target.casefold()
+        for item in folders:
+            if target_key in {
+                str(item.get("id", "")).casefold(),
+                str(item.get("name", "")).casefold(),
+                str(item.get("display_name", "")).casefold(),
+                str(item.get("kind", "")).casefold(),
+            }:
+                return str(item.get("id", ""))
+        return self._normalize_graph_folder_id(target)
 
+    def _build_imap_search_criteria(self, config: MailboxConfig) -> list[str]:
+        criteria: list[str] = []
+        read_state = config.read_state
+        if config.unread_only and read_state == DEFAULT_READ_STATE:
+            read_state = "unread"
+        if read_state == "unread":
+            criteria.append("UNSEEN")
+        elif read_state == "read":
+            criteria.append("SEEN")
+        if config.flagged_only:
+            criteria.append("FLAGGED")
+        return criteria or ["ALL"]
 
-@dataclass(slots=True)
-class MessageDetail(MessageSummary):
-    body_text: str = ""
-    body_html: str | None = None
-    to_recipients: list[str] = field(default_factory=list)
-    cc_recipients: list[str] = field(default_factory=list)
-    bcc_recipients: list[str] = field(default_factory=list)
-    headers: dict[str, str] = field(default_factory=dict)
-    conversation_id: str = ""
+    def _normalize_imap_folder_name(self, folder: str) -> str:
+        normalized = str(folder or "").strip()
+        if not normalized or normalized.casefold() == "inbox":
+            return DEFAULT_FOLDER
+        return normalized
 
+    def _resolve_imap_destination_folder(
+        self,
+        connection: imaplib.IMAP4_SSL,
+        destination_folder: str,
+        *,
+        allow_missing: bool = False,
+    ) -> str | None:
+        target = str(destination_folder or "").strip()
+        if not target:
+            if allow_missing:
+                return None
+            raise MailboxError("缺少目标文件夹", code="invalid_destination_folder")
+        folders = self._list_imap_folders_from_connection(connection)
+        target_key = target.casefold()
+        for item in folders:
+            if target_key in {
+                str(item.get("id", "")).casefold(),
+                str(item.get("name", "")).casefold(),
+                str(item.get("display_name", "")).casefold(),
+                str(item.get("kind", "")).casefold(),
+            }:
+                return str(item.get("id", ""))
+        if allow_missing:
+            return None
+        raise MailboxError("目标文件夹不存在", code="invalid_destination_folder")
 
-@dataclass(slots=True)
-class MessageListResult:
-    method: str
-    total: int
-    returned: int
-    messages: list[MessageSummary] = field(default_factory=list)
-    folder: str = "INBOX"
+    def _quote_imap_mailbox(self, folder: str) -> str:
+        normalized = self._normalize_imap_folder_name(folder)
+        if normalized == DEFAULT_FOLDER:
+            return normalized
+        escaped = normalized.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
 
-    def __len__(self) -> int:
-        return len(self.messages)
+    def _select_imap_folder(self, connection: imaplib.IMAP4_SSL, folder: str) -> None:
+        status, _ = connection.select(self._quote_imap_mailbox(folder))
+        if status != "OK":
+            raise MailboxError("无法选择邮件文件夹")
 
+    def _logout_imap(self, connection: imaplib.IMAP4_SSL) -> None:
+        try:
+            connection.logout()
+        except Exception:  # pragma: no cover - 容错回收
+            pass
 
-@dataclass(slots=True)
-class MethodOverview:
-    method: str
-    label: str
-    healthy: bool
-    status: str
-    message: str
-    message_count: int = 0
-    latest_subject: str = ""
-    latest_sender: str = ""
-
-
-@dataclass(slots=True)
-class MailboxOverview:
-    email: str
-    checked_at: str
-    methods: list[MethodOverview] = field(default_factory=list)
-
-
-@dataclass(slots=True)
-class ReadStateUpdateResult:
-    method: str
-    message_id: str
-    is_read: bool
-    status: str
-    source: str
+    @staticmethod
+    def _decode_imap_utf7(value: str) -> str:
+        result: list[str] = []
+        index = 0
+        while index < len(value):
+            current = value[index]
+            if current != "&":
+                result.append(current)
+                index += 1
+                continue
+            end_index = value.find("-", index)
+            if end_index == -1:
+                result.append(value[index:])
+                break
+            encoded = value[index + 1 : end_index]
+            if not encoded:
+                result.append("&")
+                index = end_index + 1
+                continue
+            try:
+                chunk = encoded.replace(",", "/")
+                padding = "=" * ((4 - len(chunk) % 4) % 4)
+                decoded = base64.b64decode(chunk + padding).decode("utf-16-be", "replace")
+                result.append(decoded)
+            except Exception:
+                result.append(f"&{encoded}-")
+            index = end_index + 1
+        return "".join(result)
 
 
 MailMethodOverview = MethodOverview
@@ -834,6 +1510,9 @@ class MailboxManager:
             methods=methods,
         )
 
+    def list_folders(self, config: MailboxConfig, method: str) -> list[MailboxFolder]:
+        return [self._to_folder(item) for item in self._inner.list_folders(config, method)]
+
     def list_messages(self, config: MailboxConfig, request: MailboxQuery) -> MessageListResult:
         effective = replace(
             config,
@@ -841,28 +1520,79 @@ class MailboxManager:
             top=request.top,
             unread_only=request.unread_only,
             keyword=request.keyword or None,
+            folder=request.folder,
+            page=request.page,
+            page_size=request.page_size,
+            read_state=request.read_state,
+            has_attachments_only=request.has_attachments_only,
+            flagged_only=request.flagged_only,
+            importance=request.importance,
+            sort_order=request.sort_order,
         )
         raw_messages = self._inner.list_messages(effective, request.method)
         messages = [self._to_summary(item, request.method, request.folder) for item in raw_messages]
+        total = len(messages)
+        total_pages = (total + request.page_size - 1) // request.page_size if total else 0
         return MessageListResult(
             method=request.method,
-            total=len(raw_messages),
+            total=total,
             returned=len(messages),
             messages=messages,
             folder=request.folder,
+            page=request.page,
+            page_size=request.page_size,
+            total_pages=total_pages,
+            has_prev=request.page > 1 and total_pages > 0,
+            has_next=request.page < total_pages,
         )
 
     def get_message_detail(self, config: MailboxConfig, request: MessageDetailRequest) -> MessageDetail:
-        raw = self._inner.get_message_detail(config, request.method, request.message_id)
+        effective = replace(config, default_method=request.method, folder=request.folder)
+        raw = self._inner.get_message_detail(effective, request.method, request.message_id)
         return self._to_detail(raw, request.method, request.folder)
 
     def update_read_state(self, config: MailboxConfig, request: ReadStateUpdateRequest) -> ReadStateUpdateResult:
-        raw = self._inner.set_read_state(config, request.method, request.message_id, request.is_read)
+        effective = replace(config, default_method=request.method, folder=request.folder)
+        raw = self._inner.set_read_state(effective, request.method, request.message_id, request.is_read)
         return ReadStateUpdateResult(
             method=raw.get("method", request.method),
             message_id=raw.get("message_id", request.message_id),
             is_read=bool(raw.get("is_read", request.is_read)),
             status=raw.get("status", "updated"),
+            source=OutlookMailboxManager.METHOD_LABELS.get(request.method, request.method),
+        )
+
+    def update_flag_state(self, config: MailboxConfig, request: FlagStateUpdateRequest) -> FlagStateUpdateResult:
+        effective = replace(config, default_method=request.method, folder=request.folder)
+        raw = self._inner.set_flag_state(effective, request.method, request.message_id, request.is_flagged)
+        return FlagStateUpdateResult(
+            method=raw.get("method", request.method),
+            message_id=raw.get("message_id", request.message_id),
+            is_flagged=bool(raw.get("is_flagged", request.is_flagged)),
+            status=raw.get("status", "updated"),
+            source=OutlookMailboxManager.METHOD_LABELS.get(request.method, request.method),
+        )
+
+    def move_message(self, config: MailboxConfig, request: MessageMoveRequest) -> MessageMoveResult:
+        effective = replace(config, default_method=request.method, folder=request.folder)
+        raw = self._inner.move_message(effective, request.method, request.message_id, request.destination_folder)
+        return MessageMoveResult(
+            method=raw.get("method", request.method),
+            message_id=raw.get("message_id", request.message_id),
+            source_folder=raw.get("source_folder", request.folder),
+            destination_folder=raw.get("destination_folder", request.destination_folder),
+            status=raw.get("status", "moved"),
+            source=OutlookMailboxManager.METHOD_LABELS.get(request.method, request.method),
+        )
+
+    def delete_message(self, config: MailboxConfig, request: MessageDeleteRequest) -> MessageDeleteResult:
+        effective = replace(config, default_method=request.method, folder=request.folder)
+        raw = self._inner.delete_message(effective, request.method, request.message_id)
+        return MessageDeleteResult(
+            method=raw.get("method", request.method),
+            message_id=raw.get("message_id", request.message_id),
+            folder=raw.get("folder", request.folder),
+            status=raw.get("status", "deleted"),
             source=OutlookMailboxManager.METHOD_LABELS.get(request.method, request.method),
         )
 
@@ -874,6 +1604,17 @@ class MailboxManager:
         proxy: str | None = None,
     ) -> str:
         return self._inner.resolve_mailbox_email(client_id, refresh_token, proxy)
+
+    def _to_folder(self, item: dict[str, Any]) -> MailboxFolder:
+        return MailboxFolder(
+            id=str(item.get("id", "") or ""),
+            name=str(item.get("name", "") or ""),
+            display_name=str(item.get("display_name", "") or ""),
+            total=int(item.get("total", 0) or 0),
+            unread=int(item.get("unread", 0) or 0),
+            is_default=bool(item.get("is_default", False)),
+            kind=str(item.get("kind", "custom") or "custom"),
+        )
 
     def _to_summary(self, item: dict[str, Any], method: str, folder: str) -> MessageSummary:
         return MessageSummary(
@@ -887,12 +1628,26 @@ class MailboxManager:
             has_attachments=bool(item.get("has_attachments", False)),
             preview=item.get("preview", ""),
             source=OutlookMailboxManager.METHOD_LABELS.get(item.get("method", method), method),
-            folder=folder,
+            folder=item.get("folder", folder),
             internet_message_id=item.get("internet_message_id", ""),
+            is_flagged=bool(item.get("is_flagged", False)),
+            importance=item.get("importance", "normal"),
+            conversation_id=item.get("conversation_id", ""),
         )
 
     def _to_detail(self, item: dict[str, Any], method: str, folder: str) -> MessageDetail:
         summary = self._to_summary(item, method, folder)
+        attachments = [
+            AttachmentSummary(
+                id=str(attachment.get("id", "") or ""),
+                name=str(attachment.get("name", "") or ""),
+                content_type=str(attachment.get("content_type", "") or ""),
+                size=int(attachment.get("size", 0) or 0),
+                is_inline=bool(attachment.get("is_inline", False)),
+            )
+            for attachment in item.get("attachments", [])
+            if isinstance(attachment, dict)
+        ]
         return MessageDetail(
             method=summary.method,
             message_id=summary.message_id,
@@ -906,11 +1661,14 @@ class MailboxManager:
             source=summary.source,
             folder=summary.folder,
             internet_message_id=summary.internet_message_id,
-            body_text=item.get("body", ""),
+            is_flagged=summary.is_flagged,
+            importance=summary.importance,
+            conversation_id=item.get("conversation_id", summary.conversation_id),
+            body_text=item.get("body_text", item.get("body", "")),
             body_html=item.get("body_html"),
             to_recipients=list(item.get("to", [])),
             cc_recipients=list(item.get("cc", [])),
             bcc_recipients=list(item.get("bcc", [])),
             headers=dict(item.get("headers", {})),
-            conversation_id=item.get("conversation_id", ""),
+            attachments=attachments,
         )

@@ -18,6 +18,10 @@ class RecordingManager:
         self.resolve_email_error = resolve_email_error
         self.calls: list[tuple[object, object]] = []
         self.detail_calls: list[tuple[object, object]] = []
+        self.folder_calls: list[tuple[object, object]] = []
+        self.flag_calls: list[tuple[object, object]] = []
+        self.move_calls: list[tuple[object, object]] = []
+        self.delete_calls: list[tuple[object, object]] = []
 
     def list_messages(self, config: object, request: object) -> object:
         self.calls.append((config, request))
@@ -28,6 +32,12 @@ class RecordingManager:
             method=method,
             total=1,
             returned=1,
+            folder=getattr(request, "folder", "INBOX"),
+            page=getattr(request, "page", 1),
+            page_size=getattr(request, "page_size", 20),
+            total_pages=1,
+            has_prev=False,
+            has_next=False,
             messages=[
                 MessageSummary(
                     method=method,
@@ -37,12 +47,39 @@ class RecordingManager:
                     sender_name="Sender",
                     received_at="2026-03-13T00:00:00Z",
                     is_read=False,
-                    has_attachments=False,
+                    has_attachments=True,
                     preview="Preview",
                     source="Graph API",
+                    folder=getattr(request, "folder", "INBOX"),
+                    is_flagged=True,
+                    importance="high",
+                    conversation_id="conv-1",
                 )
             ],
         )
+
+    def list_folders(self, config: object, method: str) -> list[dict[str, object]]:
+        self.folder_calls.append((config, method))
+        return [
+            {
+                "id": "INBOX",
+                "name": "inbox",
+                "display_name": "收件箱",
+                "total": 12,
+                "unread": 3,
+                "is_default": True,
+                "kind": "inbox",
+            },
+            {
+                "id": "archive",
+                "name": "archive",
+                "display_name": "归档",
+                "total": 5,
+                "unread": 0,
+                "is_default": False,
+                "kind": "archive",
+            },
+        ]
 
     def get_message_detail(self, config: object, request: object) -> object:
         self.detail_calls.append((config, request))
@@ -56,17 +93,50 @@ class RecordingManager:
             sender_name="Sender",
             received_at="2026-03-13T00:00:00Z",
             is_read=False,
-            has_attachments=False,
+            has_attachments=True,
             preview="Preview",
             source="Graph API",
+            folder=getattr(request, "folder", "INBOX"),
             internet_message_id="<demo>",
             body_text="Hello detail",
+            body_html="<p>Hello <strong>detail</strong></p>",
             to_recipients=["demo@example.com"],
             cc_recipients=[],
             bcc_recipients=[],
-            headers={},
+            headers={"Message-ID": "<demo>"},
+            attachments=[],
+            is_flagged=True,
+            importance="high",
             conversation_id="conv-1",
         )
+
+    def update_flag_state(self, config: object, request: object) -> object:
+        self.flag_calls.append((config, request))
+        return {
+            "method": getattr(request, "method", "graph_api"),
+            "message_id": request.message_id,
+            "is_flagged": bool(request.is_flagged),
+            "status": "updated",
+        }
+
+    def move_message(self, config: object, request: object) -> object:
+        self.move_calls.append((config, request))
+        return {
+            "method": getattr(request, "method", "graph_api"),
+            "message_id": request.message_id,
+            "source_folder": getattr(request, "folder", "INBOX"),
+            "destination_folder": request.destination_folder,
+            "status": "moved",
+        }
+
+    def delete_message(self, config: object, request: object) -> object:
+        self.delete_calls.append((config, request))
+        return {
+            "method": getattr(request, "method", "graph_api"),
+            "message_id": request.message_id,
+            "folder": getattr(request, "folder", "INBOX"),
+            "status": "deleted",
+        }
 
     def resolve_mailbox_email(self, *, client_id: str, refresh_token: str, proxy: str | None = None) -> str:
         if self.resolve_email_error:
@@ -751,3 +821,169 @@ def test_key_mailbox_messages_returns_404_for_unknown_email(tmp_path) -> None:
     assert response.status_code == 404
     payload = response.get_json()
     assert payload["error"]["message"] == "邮箱档案不存在"
+
+
+def test_mailbox_folders_returns_folder_list(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    mailbox = create_mailbox(store, label="Folders Box", email="folders@example.com")
+    manager = RecordingManager()
+    client = build_client(store, manager)
+
+    response = client.post(
+        "/api/mailbox/folders",
+        json={
+            "mailbox_id": mailbox.id,
+            "method": "imap_new",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["method"] == "imap_new"
+    assert payload["folders"][0]["display_name"] == "收件箱"
+    assert payload["folders"][1]["kind"] == "archive"
+    config, method = manager.folder_calls[0]
+    assert config.email == "folders@example.com"
+    assert method == "imap_new"
+
+
+def test_mailbox_messages_supports_folder_filters_and_meta(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    mailbox = create_mailbox(store, label="Messages Box", email="messages@example.com")
+    manager = RecordingManager()
+    client = build_client(store, manager)
+
+    response = client.post(
+        "/api/mailbox/messages",
+        json={
+            "mailbox_id": mailbox.id,
+            "method": "imap_old",
+            "folder": "archive",
+            "page": 2,
+            "page_size": 25,
+            "read_state": "unread",
+            "has_attachments_only": True,
+            "flagged_only": True,
+            "importance": "high",
+            "sort_order": "asc",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["folder"] == "archive"
+    assert payload["meta"]["page"] == 2
+    assert payload["meta"]["page_size"] == 25
+    assert payload["messages"][0]["folder"] == "archive"
+    assert payload["messages"][0]["is_flagged"] is True
+    assert payload["messages"][0]["importance"] == "high"
+
+    config, request = manager.calls[0]
+    assert config.email == "messages@example.com"
+    assert request.folder == "archive"
+    assert request.page == 2
+    assert request.page_size == 25
+    assert request.read_state == "unread"
+    assert request.has_attachments_only is True
+    assert request.flagged_only is True
+    assert request.importance == "high"
+    assert request.sort_order == "asc"
+
+
+def test_mailbox_message_flag_state_returns_updated_message(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    mailbox = create_mailbox(store, label="Flag Box", email="flag@example.com")
+    manager = RecordingManager()
+    client = build_client(store, manager)
+
+    response = client.post(
+        "/api/mailbox/message/flag-state",
+        json={
+            "mailbox_id": mailbox.id,
+            "message_id": "msg-001",
+            "folder": "INBOX",
+            "is_flagged": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["message"]["message_id"] == "msg-001"
+    assert payload["message"]["is_flagged"] is True
+    assert payload["message"]["body_html"] == "<p>Hello <strong>detail</strong></p>"
+    config, request = manager.flag_calls[0]
+    assert config.email == "flag@example.com"
+    assert request.message_id == "msg-001"
+    assert request.is_flagged is True
+    assert request.folder == "INBOX"
+
+
+def test_mailbox_message_move_and_delete_routes_return_results(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    mailbox = create_mailbox(store, label="Move Box", email="move@example.com")
+    manager = RecordingManager()
+    client = build_client(store, manager)
+
+    move_response = client.post(
+        "/api/mailbox/message/move",
+        json={
+            "mailbox_id": mailbox.id,
+            "message_id": "msg-001",
+            "folder": "INBOX",
+            "destination_folder": "archive",
+        },
+    )
+
+    delete_response = client.post(
+        "/api/mailbox/message/delete",
+        json={
+            "mailbox_id": mailbox.id,
+            "message_id": "msg-001",
+            "folder": "archive",
+        },
+    )
+
+    assert move_response.status_code == 200
+    move_payload = move_response.get_json()
+    assert move_payload["result"]["destination_folder"] == "archive"
+    assert move_payload["result"]["status"] == "moved"
+
+    assert delete_response.status_code == 200
+    delete_payload = delete_response.get_json()
+    assert delete_payload["result"]["folder"] == "archive"
+    assert delete_payload["result"]["status"] == "deleted"
+
+    _, move_request = manager.move_calls[0]
+    assert move_request.destination_folder == "archive"
+    _, delete_request = manager.delete_calls[0]
+    assert delete_request.folder == "archive"
+
+
+def test_mailbox_batch_actions_support_flag_move_and_delete(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    mailbox = create_mailbox(store, label="Batch Box", email="batch@example.com")
+    manager = RecordingManager()
+    client = build_client(store, manager)
+
+    response = client.post(
+        "/api/mailbox/messages/actions/batch",
+        json={
+            "mailbox_id": mailbox.id,
+            "method": "graph_api",
+            "folder": "INBOX",
+            "message_ids": ["msg-001", "msg-002"],
+            "action": "move",
+            "destination_folder": "archive",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["summary"] == {
+        "processed": 2,
+        "succeeded": 2,
+        "failed": 0,
+    }
+    assert payload["results"][0]["success"] is True
+    assert payload["results"][0]["result"]["destination_folder"] == "archive"
+    assert len(manager.move_calls) == 2

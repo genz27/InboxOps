@@ -115,6 +115,7 @@
                         <label class="toolbar-search">
                             <input type="text" id="searchInput" placeholder="搜索主题、发件人...">
                         </label>
+                        <button type="button" class="button ghost compact" id="refreshMessagesButton">刷新</button>
                     </div>
 
                     <section id="editorDrawer" class="editor-drawer panel" hidden>
@@ -220,6 +221,78 @@
                         <div id="overviewCards" class="overview-cards-mini"></div>
                     </section>
 
+                    <section class="folder-strip panel compact-panel">
+                        <div class="section-head mini-head">
+                            <strong>邮件文件夹</strong>
+                            <span id="folderSummary" class="toolbar-meta-text">未加载</span>
+                        </div>
+                        <div id="folderList" class="folder-list"></div>
+                    </section>
+
+                    <section class="message-filter-panel panel compact-panel">
+                        <div class="message-filter-grid">
+                            <label class="field">
+                                <span>已读状态</span>
+                                <select id="readStateSelect">
+                                    <option value="all">全部</option>
+                                    <option value="unread">仅未读</option>
+                                    <option value="read">仅已读</option>
+                                </select>
+                            </label>
+                            <label class="field">
+                                <span>重要程度</span>
+                                <select id="importanceSelect">
+                                    <option value="all">全部</option>
+                                    <option value="high">高</option>
+                                    <option value="normal">普通</option>
+                                    <option value="low">低</option>
+                                </select>
+                            </label>
+                            <label class="field">
+                                <span>排序</span>
+                                <select id="sortOrderSelect">
+                                    <option value="desc">时间倒序</option>
+                                    <option value="asc">时间正序</option>
+                                </select>
+                            </label>
+                            <label class="field">
+                                <span>每页数量</span>
+                                <select id="pageSizeSelect">
+                                    <option value="10">10</option>
+                                    <option value="20" selected>20</option>
+                                    <option value="50">50</option>
+                                </select>
+                            </label>
+                            <label class="toggle-field">
+                                <input type="checkbox" id="attachmentOnlyCheckbox">
+                                <span>仅看有附件</span>
+                            </label>
+                            <label class="toggle-field">
+                                <input type="checkbox" id="flaggedOnlyCheckbox">
+                                <span>仅看已星标</span>
+                            </label>
+                        </div>
+                    </section>
+
+                    <section class="message-batch-panel panel compact-panel">
+                        <div class="message-batch-meta">
+                            <span id="selectedMessageCount">已选 0 封邮件</span>
+                            <button type="button" class="button ghost compact" id="clearSelectedMessagesButton">清空选择</button>
+                        </div>
+                        <div class="message-batch-actions">
+                            <button type="button" class="button ghost compact" id="batchMarkReadButton">批量已读</button>
+                            <button type="button" class="button ghost compact" id="batchMarkUnreadButton">批量未读</button>
+                            <button type="button" class="button ghost compact" id="batchFlagButton">批量加星</button>
+                            <button type="button" class="button ghost compact" id="batchUnflagButton">取消星标</button>
+                            <select id="batchMoveFolderSelect" class="compact-select">
+                                <option value="">移动到...</option>
+                            </select>
+                            <button type="button" class="button ghost compact" id="batchMoveButton">移动</button>
+                            <button type="button" class="button ghost compact" id="batchArchiveButton">归档</button>
+                            <button type="button" class="button danger compact" id="batchDeleteButton">删除</button>
+                        </div>
+                    </section>
+
                     <section class="message-column panel column-wrapper flex-1">
                         <div class="section-head sticky-head mini-head">
                             <strong id="messageCount">0 封邮件</strong>
@@ -230,6 +303,11 @@
                         </div>
                         <div class="scroll-area">
                             <div id="messageList" class="message-list"></div>
+                        </div>
+                        <div class="message-pagination">
+                            <button type="button" class="button ghost compact" id="messagePrevPageButton">上一页</button>
+                            <span id="messagePageInfo" class="toolbar-meta-text">第 0 / 0 页</span>
+                            <button type="button" class="button ghost compact" id="messageNextPageButton">下一页</button>
                         </div>
                     </section>
                 </section>
@@ -247,19 +325,47 @@
                             <div class="detail-meta border-bottom">
                                 <div class="meta-row"><span>发件人:</span> <strong id="detailSender">-</strong></div>
                                 <div class="meta-row"><span>收件人:</span> <strong id="detailTo">-</strong></div>
+                                <div class="meta-row"><span>抄送:</span> <strong id="detailCc">-</strong></div>
+                                <div class="meta-row"><span>密送:</span> <strong id="detailBcc">-</strong></div>
                                 <div class="meta-row"><span>时 间:</span> <strong id="detailTime">-</strong></div>
                                 <div class="meta-row"><span>消息 ID:</span> <strong id="detailMessageId">-</strong></div>
+                                <div class="meta-row"><span>会话 ID:</span> <strong id="detailConversationId">-</strong></div>
                                 <div class="meta-row">
                                     <span id="detailMethodTag" class="method-badge">Graph API</span>
                                     <span id="detailReadBadge" class="state-chip">未读</span>
+                                    <span id="detailFlagBadge" class="state-chip">未星标</span>
+                                    <span id="detailImportanceBadge" class="state-chip">普通</span>
                                     <span id="detailAttachmentBadge" class="state-chip">无附件</span>
                                 </div>
                             </div>
                             <div class="form-actions border-bottom">
                                 <button type="button" class="button primary compact" id="markReadButton" disabled>标为已读</button>
                                 <button type="button" class="button ghost compact" id="markUnreadButton" disabled>标为未读</button>
+                                <button type="button" class="button ghost compact" id="flagMessageButton" disabled>加星</button>
+                                <button type="button" class="button ghost compact" id="unflagMessageButton" disabled>取消星标</button>
+                                <select id="moveFolderSelect" class="compact-select">
+                                    <option value="">移动到...</option>
+                                </select>
+                                <button type="button" class="button ghost compact" id="moveMessageButton" disabled>移动</button>
+                                <button type="button" class="button ghost compact" id="archiveMessageButton" disabled>归档</button>
+                                <button type="button" class="button danger compact" id="deleteMessageButton" disabled>删除</button>
+                            </div>
+                            <div class="detail-view-tabs">
+                                <button type="button" class="button ghost compact" id="detailTextViewButton">正文文本</button>
+                                <button type="button" class="button ghost compact" id="detailHtmlViewButton">HTML 视图</button>
+                                <button type="button" class="button ghost compact" id="detailHeadersViewButton">Headers</button>
+                                <div class="detail-nav-inline">
+                                    <button type="button" class="button ghost compact" id="prevMessageButton">上一封</button>
+                                    <button type="button" class="button ghost compact" id="nextMessageButton">下一封</button>
+                                </div>
+                            </div>
+                            <div class="detail-attachments border-bottom" id="detailAttachmentsSection" hidden>
+                                <strong>附件</strong>
+                                <div id="detailAttachmentList" class="attachment-list"></div>
                             </div>
                             <pre id="detailBody" class="detail-body"></pre>
+                            <iframe id="detailHtmlFrame" class="detail-html-frame" sandbox hidden></iframe>
+                            <pre id="detailHeaders" class="detail-body detail-headers" hidden></pre>
                         </article>
                     </div>
                 </aside>
@@ -294,14 +400,23 @@
     </template>
 
     <template id="messageItemTemplate">
-        <button type="button" class="message-item">
-            <div class="message-item-top">
-                <strong class="message-item-sender"></strong>
-                <span class="message-item-time"></span>
-            </div>
-            <p class="message-item-subject"></p>
-            <span class="message-item-preview"></span>
-        </button>
+        <article class="message-item-card">
+            <label class="message-select">
+                <input type="checkbox" class="message-select-checkbox" aria-label="选择邮件">
+            </label>
+            <button type="button" class="message-item">
+                <div class="message-item-top">
+                    <strong class="message-item-sender"></strong>
+                    <span class="message-item-time"></span>
+                </div>
+                <div class="message-item-tags">
+                    <span class="state-chip message-item-flag" hidden>已星标</span>
+                    <span class="state-chip message-item-importance" hidden></span>
+                </div>
+                <p class="message-item-subject"></p>
+                <span class="message-item-preview"></span>
+            </button>
+        </article>
     </template>
 
     <script src="{{ url_for('static', filename='app.js') }}" defer></script>
