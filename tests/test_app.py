@@ -420,6 +420,106 @@ def create_mailbox(
     )
 
 
+def test_change_admin_password_updates_login_password_and_persists(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    manager = RecordingManager()
+    auth_path = tmp_path / "admin-auth.json"
+    app = create_app(
+        manager=manager,
+        store=store,
+        admin_password="admin123456",
+        admin_auth_path=auth_path,
+    )
+    app.config["TESTING"] = True
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["admin_authenticated"] = True
+        session["admin_username"] = "admin"
+
+    response = client.post(
+        "/api/auth/password",
+        json={
+            "current_password": "admin123456",
+            "new_password": "new-admin-123",
+            "confirm_password": "new-admin-123",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"updated": True, "username": "admin"}
+    assert auth_path.exists()
+
+    relogin_app = create_app(
+        manager=manager,
+        store=store,
+        admin_password="admin123456",
+        admin_auth_path=auth_path,
+    )
+    relogin_app.config["TESTING"] = True
+    relogin_client = relogin_app.test_client()
+
+    old_password_response = relogin_client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "admin123456"},
+    )
+    assert old_password_response.status_code == 401
+
+    new_password_response = relogin_client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "new-admin-123"},
+    )
+    assert new_password_response.status_code == 200
+    assert new_password_response.get_json() == {"authenticated": True, "username": "admin"}
+
+
+def test_change_admin_password_rejects_invalid_current_password(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    manager = RecordingManager()
+    app = create_app(manager=manager, store=store, admin_password="admin123456")
+    app.config["TESTING"] = True
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["admin_authenticated"] = True
+        session["admin_username"] = "admin"
+
+    response = client.post(
+        "/api/auth/password",
+        json={
+            "current_password": "wrong-password",
+            "new_password": "new-admin-123",
+            "confirm_password": "new-admin-123",
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["error"]["code"] == "invalid_current_password"
+
+
+def test_change_admin_password_requires_minimum_length(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    manager = RecordingManager()
+    app = create_app(manager=manager, store=store, admin_password="admin123456")
+    app.config["TESTING"] = True
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["admin_authenticated"] = True
+        session["admin_username"] = "admin"
+
+    response = client.post(
+        "/api/auth/password",
+        json={
+            "current_password": "admin123456",
+            "new_password": "short",
+            "confirm_password": "short",
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["error"]["code"] == "invalid_new_password"
+
+
 def test_list_mailboxes_returns_summary_and_meta(tmp_path) -> None:
     store = MailboxStore(tmp_path / "mailboxes.db")
     create_mailbox(store, label="Alpha Box", email="alpha@example.com", notes="Project Red")

@@ -473,6 +473,22 @@ export async function logout(): Promise<void> {
   });
 }
 
+export async function changeAdminPassword(payload: {
+  currentPassword: string;
+  newPassword: string;
+  confirmPassword: string;
+}): Promise<{ updated: boolean; username: string }> {
+  return requestJson<{ updated: boolean; username: string }>('/api/auth/password', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({
+      current_password: payload.currentPassword,
+      new_password: payload.newPassword,
+      confirm_password: payload.confirmPassword,
+    }),
+  });
+}
+
 export async function listMailboxes(params?: { q?: string; page?: number; page_size?: number }): Promise<EmailAccount[]> {
   const query = new URLSearchParams();
   query.set('page', String(params?.page ?? 1));
@@ -1135,6 +1151,7 @@ export const api = {
   getAuthMe,
   login,
   logout,
+  changeAdminPassword,
   listMailboxes,
   createMailbox,
   getMailbox,

@@ -2,10 +2,12 @@
 
 import base64
 import csv
+import hashlib
 import hmac
 import json
 import os
 import re
+import secrets
 from dataclasses import asdict, is_dataclass
 from functools import wraps
 from io import StringIO
@@ -31,6 +33,85 @@ MAILBOX_IMPORT_DELIMITER = "----"
 MAILBOX_IMPORT_TABULAR_DELIMITERS = ",\t;|"
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 CLIENT_ID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+ADMIN_PASSWORD_MIN_LENGTH = 8
+ADMIN_PASSWORD_HASH_ITERATIONS = 200_000
+
+
+def _hash_admin_password(password: str, *, salt: str, iterations: int = ADMIN_PASSWORD_HASH_ITERATIONS) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        iterations,
+    ).hex()
+
+
+def _build_admin_password_state(
+    password: str,
+    *,
+    salt: str | None = None,
+    iterations: int = ADMIN_PASSWORD_HASH_ITERATIONS,
+) -> dict[str, Any]:
+    resolved_salt = salt or secrets.token_hex(16)
+    return {
+        "salt": resolved_salt,
+        "iterations": iterations,
+        "password_hash": _hash_admin_password(password, salt=resolved_salt, iterations=iterations),
+    }
+
+
+def _load_admin_password_state(default_password: str, auth_path: Path) -> dict[str, Any]:
+    if auth_path.exists():
+        try:
+            payload = json.loads(auth_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            payload = {}
+
+        if isinstance(payload, dict):
+            password_hash = payload.get("password_hash")
+            salt = payload.get("salt")
+            iterations = payload.get("iterations", ADMIN_PASSWORD_HASH_ITERATIONS)
+            if (
+                isinstance(password_hash, str)
+                and password_hash
+                and isinstance(salt, str)
+                and salt
+                and isinstance(iterations, int)
+                and iterations > 0
+            ):
+                return {
+                    "salt": salt,
+                    "iterations": iterations,
+                    "password_hash": password_hash,
+                }
+
+    return _build_admin_password_state(default_password)
+
+
+def _save_admin_password_state(auth_path: Path, username: str, password_state: dict[str, Any]) -> None:
+    auth_path.parent.mkdir(parents=True, exist_ok=True)
+    auth_path.write_text(
+        json.dumps(
+            {
+                "username": username,
+                "salt": password_state["salt"],
+                "iterations": password_state["iterations"],
+                "password_hash": password_state["password_hash"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _verify_admin_password(password: str, password_state: dict[str, Any]) -> bool:
+    expected_hash = _hash_admin_password(
+        password,
+        salt=str(password_state["salt"]),
+        iterations=int(password_state["iterations"]),
+    )
+    return hmac.compare_digest(expected_hash, str(password_state["password_hash"]))
 
 
 def create_app(
@@ -40,6 +121,7 @@ def create_app(
     database_path: str | Path | None = None,
     admin_username: str | None = None,
     admin_password: str | None = None,
+    admin_auth_path: str | Path | None = None,
     public_api_key: str | None = None,
 ) -> Flask:
     app = Flask(__name__)
@@ -52,6 +134,8 @@ def create_app(
     mailbox_store = store or MailboxStore(database_path or os.getenv("MAILBOX_DB_PATH", "data/mailboxes.db"))
     admin_user = admin_username or os.getenv("MAIL_ADMIN_USERNAME", "admin")
     admin_pass = admin_password or os.getenv("MAIL_ADMIN_PASSWORD", "admin123456")
+    admin_auth_file = Path(admin_auth_path or os.getenv("MAIL_ADMIN_AUTH_FILE", "data/admin_auth.json"))
+    admin_password_state = _load_admin_password_state(admin_pass, admin_auth_file)
     access_key = public_api_key if public_api_key is not None else os.getenv("INBOXOPS_API_KEY", "")
 
     def auth_required(handler: Callable[..., Any]) -> Callable[..., Any]:
@@ -113,7 +197,7 @@ def create_app(
         username = _require_text(payload, "username", "管理员账号不能为空")
         password = _require_text(payload, "password", "管理员密码不能为空")
 
-        if not hmac.compare_digest(username, admin_user) or not hmac.compare_digest(password, admin_pass):
+        if not hmac.compare_digest(username, admin_user) or not _verify_admin_password(password, admin_password_state):
             raise MailboxError("管理员账号或密码错误", code="invalid_credentials", status_code=401)
 
         session["admin_authenticated"] = True
@@ -125,6 +209,38 @@ def create_app(
     def auth_logout() -> Any:
         session.clear()
         return jsonify({"authenticated": False})
+
+    @app.post("/api/auth/password")
+    @auth_required
+    def auth_change_password() -> Any:
+        payload = request.get_json(silent=True) or {}
+        current_password = _require_text(payload, "current_password", "当前管理员密码不能为空")
+        new_password = _require_text(payload, "new_password", "新管理员密码不能为空")
+        confirm_password = _require_text(payload, "confirm_password", "确认新密码不能为空")
+
+        if not _verify_admin_password(current_password, admin_password_state):
+            raise MailboxError("当前管理员密码错误", code="invalid_current_password", status_code=400)
+        if len(new_password) < ADMIN_PASSWORD_MIN_LENGTH:
+            raise MailboxError(
+                f"新管理员密码长度不能少于 {ADMIN_PASSWORD_MIN_LENGTH} 位",
+                code="invalid_new_password",
+                status_code=400,
+            )
+        if not hmac.compare_digest(new_password, confirm_password):
+            raise MailboxError("两次输入的新密码不一致", code="password_mismatch", status_code=400)
+        if hmac.compare_digest(current_password, new_password):
+            raise MailboxError("新密码不能与当前密码相同", code="password_unchanged", status_code=400)
+
+        next_password_state = _build_admin_password_state(new_password)
+        try:
+            _save_admin_password_state(admin_auth_file, admin_user, next_password_state)
+        except OSError as exc:
+            raise MailboxError("保存管理员密码失败", code="admin_password_save_failed", status_code=500) from exc
+
+        admin_password_state.clear()
+        admin_password_state.update(next_password_state)
+        session["admin_username"] = admin_user
+        return jsonify({"updated": True, "username": admin_user})
 
     @app.get("/api/mailboxes")
     @auth_required
