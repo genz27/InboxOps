@@ -23,9 +23,18 @@ TOKEN_URL_IMAP = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
 
 GRAPH_MESSAGES_URL = "https://graph.microsoft.com/v1.0/me/mailFolders/{folder_id}/messages"
 GRAPH_MESSAGE_URL = "https://graph.microsoft.com/v1.0/me/messages/{message_id}"
+GRAPH_CREATE_MESSAGE_URL = "https://graph.microsoft.com/v1.0/me/messages"
+GRAPH_SEND_MAIL_URL = "https://graph.microsoft.com/v1.0/me/sendMail"
+GRAPH_MESSAGE_SEND_URL = "https://graph.microsoft.com/v1.0/me/messages/{message_id}/send"
 GRAPH_MESSAGE_MOVE_URL = "https://graph.microsoft.com/v1.0/me/messages/{message_id}/move"
 GRAPH_MESSAGE_ATTACHMENTS_URL = "https://graph.microsoft.com/v1.0/me/messages/{message_id}/attachments"
+GRAPH_MESSAGE_ATTACHMENT_URL = "https://graph.microsoft.com/v1.0/me/messages/{message_id}/attachments/{attachment_id}"
+GRAPH_MESSAGE_CREATE_REPLY_URL = "https://graph.microsoft.com/v1.0/me/messages/{message_id}/createReply"
+GRAPH_MESSAGE_CREATE_REPLY_ALL_URL = "https://graph.microsoft.com/v1.0/me/messages/{message_id}/createReplyAll"
+GRAPH_MESSAGE_CREATE_FORWARD_URL = "https://graph.microsoft.com/v1.0/me/messages/{message_id}/createForward"
 GRAPH_MAIL_FOLDERS_URL = "https://graph.microsoft.com/v1.0/me/mailFolders"
+GRAPH_MAIL_FOLDER_URL = "https://graph.microsoft.com/v1.0/me/mailFolders/{folder_id}"
+GRAPH_MAIL_FOLDER_CHILDREN_URL = "https://graph.microsoft.com/v1.0/me/mailFolders/{folder_id}/childFolders"
 GRAPH_PROFILE_URL = "https://graph.microsoft.com/v1.0/me"
 
 IMAP_SERVER_OLD = "outlook.office365.com"
@@ -223,6 +232,103 @@ class MessageDeleteRequest:
 
 
 @dataclass(slots=True)
+class ComposeAttachment:
+    name: str
+    content_base64: str
+    content_type: str = "application/octet-stream"
+    is_inline: bool = False
+
+
+@dataclass(slots=True)
+class DraftSaveRequest:
+    method: str
+    subject: str
+    body_text: str = ""
+    body_html: str | None = None
+    to_recipients: list[str] = field(default_factory=list)
+    cc_recipients: list[str] = field(default_factory=list)
+    bcc_recipients: list[str] = field(default_factory=list)
+    attachments: list[ComposeAttachment] = field(default_factory=list)
+    importance: str = "normal"
+    draft_id: str = ""
+
+
+@dataclass(slots=True)
+class MessageSendRequest:
+    method: str
+    subject: str
+    body_text: str = ""
+    body_html: str | None = None
+    to_recipients: list[str] = field(default_factory=list)
+    cc_recipients: list[str] = field(default_factory=list)
+    bcc_recipients: list[str] = field(default_factory=list)
+    attachments: list[ComposeAttachment] = field(default_factory=list)
+    importance: str = "normal"
+    save_to_sent_items: bool = True
+
+
+@dataclass(slots=True)
+class MessageReplyRequest:
+    method: str
+    message_id: str
+    folder: str = DEFAULT_FOLDER
+    body_text: str = ""
+    body_html: str | None = None
+    comment: str = ""
+    attachments: list[ComposeAttachment] = field(default_factory=list)
+    importance: str = "normal"
+
+
+@dataclass(slots=True)
+class MessageForwardRequest:
+    method: str
+    message_id: str
+    to_recipients: list[str]
+    folder: str = DEFAULT_FOLDER
+    body_text: str = ""
+    body_html: str | None = None
+    comment: str = ""
+    attachments: list[ComposeAttachment] = field(default_factory=list)
+    importance: str = "normal"
+
+
+@dataclass(slots=True)
+class AttachmentDownloadRequest:
+    method: str
+    message_id: str
+    attachment_id: str
+    folder: str = DEFAULT_FOLDER
+
+
+@dataclass(slots=True)
+class AttachmentUploadRequest:
+    method: str
+    message_id: str
+    attachments: list[ComposeAttachment] = field(default_factory=list)
+    folder: str = "drafts"
+
+
+@dataclass(slots=True)
+class FolderCreateRequest:
+    method: str
+    display_name: str
+    parent_folder: str = ""
+
+
+@dataclass(slots=True)
+class FolderRenameRequest:
+    method: str
+    folder_id: str
+    display_name: str
+
+
+@dataclass(slots=True)
+class FolderDeleteRequest:
+    method: str
+    folder_id: str
+
+
+@dataclass(slots=True)
 class MessageDetail(MessageSummary):
     body_text: str = ""
     body_html: str | None = None
@@ -303,6 +409,45 @@ class MessageDeleteResult:
     method: str
     message_id: str
     folder: str
+    status: str
+    source: str
+
+
+@dataclass(slots=True)
+class MessageSendResult:
+    method: str
+    message_id: str
+    status: str
+    folder: str
+    source: str
+
+
+@dataclass(slots=True)
+class AttachmentDownloadResult:
+    method: str
+    message_id: str
+    attachment_id: str
+    name: str
+    content_type: str
+    size: int
+    content_base64: str
+    source: str
+
+
+@dataclass(slots=True)
+class AttachmentUploadResult:
+    method: str
+    message_id: str
+    attachments: list[AttachmentSummary] = field(default_factory=list)
+    status: str = "uploaded"
+    source: str = ""
+
+
+@dataclass(slots=True)
+class FolderMutationResult:
+    method: str
+    folder_id: str
+    display_name: str
     status: str
     source: str
 
@@ -444,6 +589,85 @@ class OutlookMailboxManager:
             return self._delete_message_graph(config, message_id)
         if method in {METHOD_IMAP_OLD, METHOD_IMAP_NEW}:
             return self._delete_message_imap(config, method, message_id)
+        raise MailboxError(f"不支持的方法: {method}")
+
+    def save_draft(self, config: MailboxConfig, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if method == METHOD_GRAPH:
+            return self._save_draft_graph(config, payload)
+        raise MailboxError("当前接入方式暂不支持草稿保存", code="method_not_supported", status_code=501)
+
+    def send_message(self, config: MailboxConfig, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if method == METHOD_GRAPH:
+            return self._send_message_graph(config, payload)
+        raise MailboxError("当前接入方式暂不支持发信", code="method_not_supported", status_code=501)
+
+    def reply_message(
+        self,
+        config: MailboxConfig,
+        method: str,
+        message_id: str,
+        payload: dict[str, Any],
+        *,
+        reply_all: bool = False,
+    ) -> dict[str, Any]:
+        if method == METHOD_GRAPH:
+            return self._reply_message_graph(config, message_id, payload, reply_all=reply_all)
+        raise MailboxError("当前接入方式暂不支持回复邮件", code="method_not_supported", status_code=501)
+
+    def forward_message(
+        self,
+        config: MailboxConfig,
+        method: str,
+        message_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if method == METHOD_GRAPH:
+            return self._forward_message_graph(config, message_id, payload)
+        raise MailboxError("当前接入方式暂不支持转发邮件", code="method_not_supported", status_code=501)
+
+    def upload_attachment(
+        self,
+        config: MailboxConfig,
+        method: str,
+        message_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if method == METHOD_GRAPH:
+            return self._upload_attachment_graph(config, message_id, payload)
+        raise MailboxError("当前接入方式暂不支持附件上传", code="method_not_supported", status_code=501)
+
+    def download_attachment(
+        self,
+        config: MailboxConfig,
+        method: str,
+        message_id: str,
+        attachment_id: str,
+    ) -> dict[str, Any]:
+        if method == METHOD_GRAPH:
+            return self._download_attachment_graph(config, message_id, attachment_id)
+        if method in {METHOD_IMAP_OLD, METHOD_IMAP_NEW}:
+            return self._download_attachment_imap(config, method, message_id, attachment_id)
+        raise MailboxError(f"不支持的方法: {method}")
+
+    def create_folder(self, config: MailboxConfig, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if method == METHOD_GRAPH:
+            return self._create_folder_graph(config, payload)
+        if method in {METHOD_IMAP_OLD, METHOD_IMAP_NEW}:
+            return self._create_folder_imap(config, method, payload)
+        raise MailboxError(f"不支持的方法: {method}")
+
+    def rename_folder(self, config: MailboxConfig, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if method == METHOD_GRAPH:
+            return self._rename_folder_graph(config, payload)
+        if method in {METHOD_IMAP_OLD, METHOD_IMAP_NEW}:
+            return self._rename_folder_imap(config, method, payload)
+        raise MailboxError(f"不支持的方法: {method}")
+
+    def delete_folder(self, config: MailboxConfig, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if method == METHOD_GRAPH:
+            return self._delete_folder_graph(config, payload)
+        if method in {METHOD_IMAP_OLD, METHOD_IMAP_NEW}:
+            return self._delete_folder_imap(config, method, payload)
         raise MailboxError(f"不支持的方法: {method}")
 
     def _list_folders_graph(self, config: MailboxConfig) -> list[dict[str, Any]]:
@@ -613,6 +837,294 @@ class OutlookMailboxManager:
             "message_id": message_id,
             "method": METHOD_GRAPH,
             "folder": config.folder,
+            "status": "deleted",
+        }
+
+    def _save_draft_graph(self, config: MailboxConfig, payload: dict[str, Any]) -> dict[str, Any]:
+        token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
+        draft_id = self._normalize_optional_payload_text(payload.get("draft_message_id") or payload.get("message_id"))
+        message_payload = self._build_graph_message_payload(payload)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        if draft_id:
+            response = requests.patch(
+                GRAPH_MESSAGE_URL.format(message_id=draft_id),
+                headers=headers,
+                json=message_payload,
+                proxies=self._build_requests_proxies(config.proxy),
+                timeout=30,
+            )
+            self._raise_for_response(response, "Graph API 更新草稿失败")
+        else:
+            response = requests.post(
+                GRAPH_CREATE_MESSAGE_URL,
+                headers=headers,
+                json=message_payload,
+                proxies=self._build_requests_proxies(config.proxy),
+                timeout=30,
+            )
+            self._raise_for_response(response, "Graph API 保存草稿失败")
+            body = response.json() if response.content else {}
+            draft_id = str(body.get("id", "") or "")
+
+        if not draft_id:
+            raise MailboxError("Graph API 未返回草稿标识")
+
+        attachments = payload.get("attachments")
+        if isinstance(attachments, list):
+            for attachment in attachments:
+                if not isinstance(attachment, dict):
+                    continue
+                self._upload_attachment_graph(config, draft_id, attachment)
+
+        detail = self._get_message_detail_graph(replace(config, folder="drafts"), draft_id)
+        detail.update(
+            {
+                "method": METHOD_GRAPH,
+                "status": "draft_saved",
+                "folder": "drafts",
+            }
+        )
+        return detail
+
+    def _send_message_graph(self, config: MailboxConfig, payload: dict[str, Any]) -> dict[str, Any]:
+        draft_id = self._normalize_optional_payload_text(payload.get("draft_message_id") or payload.get("message_id"))
+        draft = self._save_draft_graph(config, payload) if not draft_id or self._payload_has_compose_updates(payload) else None
+        resolved_draft_id = draft.get("message_id", "") if isinstance(draft, dict) else draft_id or ""
+        if not resolved_draft_id:
+            raise MailboxError("缺少待发送草稿标识", code="invalid_message_id")
+        result = self._send_existing_graph_draft(config, resolved_draft_id)
+        if draft:
+            result.update(
+                {
+                    "subject": draft.get("subject", result.get("subject", "")),
+                    "sender": draft.get("sender", result.get("sender", "")),
+                    "sender_name": draft.get("sender_name", result.get("sender_name", "")),
+                    "to": draft.get("to", []),
+                    "cc": draft.get("cc", []),
+                    "bcc": draft.get("bcc", []),
+                    "attachments": draft.get("attachments", []),
+                    "conversation_id": draft.get("conversation_id", result.get("conversation_id", "")),
+                }
+            )
+        return result
+
+    def _reply_message_graph(
+        self,
+        config: MailboxConfig,
+        message_id: str,
+        payload: dict[str, Any],
+        *,
+        reply_all: bool = False,
+    ) -> dict[str, Any]:
+        token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
+        create_url = GRAPH_MESSAGE_CREATE_REPLY_ALL_URL if reply_all else GRAPH_MESSAGE_CREATE_REPLY_URL
+        response = requests.post(
+            create_url.format(message_id=message_id),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={},
+            proxies=self._build_requests_proxies(config.proxy),
+            timeout=30,
+        )
+        self._raise_for_response(response, "Graph API 创建回复草稿失败")
+        body = response.json() if response.content else {}
+        draft_id = str(body.get("id", "") or "")
+        if not draft_id:
+            raise MailboxError("Graph API 未返回回复草稿标识")
+
+        next_payload = dict(payload)
+        next_payload["draft_message_id"] = draft_id
+        saved = self._save_draft_graph(config, next_payload)
+        if not self._payload_send_now(payload, default=True):
+            saved["status"] = "draft_saved"
+            return saved
+        result = self._send_existing_graph_draft(config, draft_id)
+        result.update(
+            {
+                "subject": saved.get("subject", result.get("subject", "")),
+                "attachments": saved.get("attachments", []),
+                "conversation_id": saved.get("conversation_id", result.get("conversation_id", "")),
+                "reply_all": reply_all,
+            }
+        )
+        return result
+
+    def _forward_message_graph(self, config: MailboxConfig, message_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
+        response = requests.post(
+            GRAPH_MESSAGE_CREATE_FORWARD_URL.format(message_id=message_id),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={},
+            proxies=self._build_requests_proxies(config.proxy),
+            timeout=30,
+        )
+        self._raise_for_response(response, "Graph API 创建转发草稿失败")
+        body = response.json() if response.content else {}
+        draft_id = str(body.get("id", "") or "")
+        if not draft_id:
+            raise MailboxError("Graph API 未返回转发草稿标识")
+
+        next_payload = dict(payload)
+        next_payload["draft_message_id"] = draft_id
+        saved = self._save_draft_graph(config, next_payload)
+        if not self._payload_send_now(payload, default=True):
+            saved["status"] = "draft_saved"
+            return saved
+        result = self._send_existing_graph_draft(config, draft_id)
+        result.update(
+            {
+                "subject": saved.get("subject", result.get("subject", "")),
+                "attachments": saved.get("attachments", []),
+                "conversation_id": saved.get("conversation_id", result.get("conversation_id", "")),
+            }
+        )
+        return result
+
+    def _send_existing_graph_draft(self, config: MailboxConfig, draft_id: str) -> dict[str, Any]:
+        token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
+        detail = self._get_message_detail_graph(replace(config, folder="drafts"), draft_id)
+        response = requests.post(
+            GRAPH_MESSAGE_SEND_URL.format(message_id=draft_id),
+            headers={"Authorization": f"Bearer {token}"},
+            proxies=self._build_requests_proxies(config.proxy),
+            timeout=30,
+        )
+        self._raise_for_response(response, "Graph API 发送邮件失败")
+        detail.update(
+            {
+                "method": METHOD_GRAPH,
+                "message_id": draft_id,
+                "status": "sent",
+                "folder": "sentitems",
+            }
+        )
+        return detail
+
+    def _upload_attachment_graph(self, config: MailboxConfig, message_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
+        name = self._require_payload_text(payload, "name", "缺少附件名称")
+        content_base64 = self._require_payload_text(payload, "content_base64", "缺少附件内容")
+        response = requests.post(
+            GRAPH_MESSAGE_ATTACHMENTS_URL.format(message_id=message_id),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": name,
+                "contentType": self._normalize_optional_payload_text(payload.get("content_type")) or "application/octet-stream",
+                "contentBytes": content_base64,
+                "isInline": bool(payload.get("is_inline", False)),
+                "contentId": self._normalize_optional_payload_text(payload.get("content_id")) or "",
+            },
+            proxies=self._build_requests_proxies(config.proxy),
+            timeout=30,
+        )
+        self._raise_for_response(response, "Graph API 上传附件失败")
+        attachment = response.json() if response.content else {}
+        normalized = self._normalize_graph_attachment(attachment)
+        normalized.update(
+            {
+                "content_base64": content_base64,
+                "content_id": self._normalize_optional_payload_text(attachment.get("contentId"))
+                or self._normalize_optional_payload_text(payload.get("content_id"))
+                or "",
+            }
+        )
+        return normalized
+
+    def _download_attachment_graph(self, config: MailboxConfig, message_id: str, attachment_id: str) -> dict[str, Any]:
+        token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
+        response = requests.get(
+            GRAPH_MESSAGE_ATTACHMENT_URL.format(message_id=message_id, attachment_id=attachment_id),
+            headers={"Authorization": f"Bearer {token}"},
+            proxies=self._build_requests_proxies(config.proxy),
+            timeout=30,
+        )
+        self._raise_for_response(response, "Graph API 下载附件失败")
+        attachment = response.json()
+        normalized = self._normalize_graph_attachment(attachment)
+        normalized.update(
+            {
+                "content_base64": str(attachment.get("contentBytes", "") or ""),
+                "content_id": str(attachment.get("contentId", "") or ""),
+            }
+        )
+        return normalized
+
+    def _create_folder_graph(self, config: MailboxConfig, payload: dict[str, Any]) -> dict[str, Any]:
+        token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
+        display_name = self._require_payload_text(payload, "display_name", "缺少文件夹名称")
+        parent_folder = self._normalize_optional_payload_text(payload.get("parent_folder_id") or payload.get("parent_folder"))
+        url = (
+            GRAPH_MAIL_FOLDER_CHILDREN_URL.format(folder_id=quote(self._normalize_graph_folder_id(parent_folder), safe=""))
+            if parent_folder
+            else GRAPH_MAIL_FOLDERS_URL
+        )
+        response = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={"displayName": display_name},
+            proxies=self._build_requests_proxies(config.proxy),
+            timeout=30,
+        )
+        self._raise_for_response(response, "Graph API 新建文件夹失败")
+        folder = self._normalize_graph_folder(response.json())
+        folder["status"] = "created"
+        folder["parent_folder_id"] = parent_folder or ""
+        return folder
+
+    def _rename_folder_graph(self, config: MailboxConfig, payload: dict[str, Any]) -> dict[str, Any]:
+        token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
+        folder_id = self._require_payload_text(payload, "folder_id", "缺少文件夹标识")
+        display_name = self._require_payload_text(payload, "display_name", "缺少新的文件夹名称")
+        response = requests.patch(
+            GRAPH_MAIL_FOLDER_URL.format(folder_id=quote(self._normalize_graph_folder_id(folder_id), safe="")),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={"displayName": display_name},
+            proxies=self._build_requests_proxies(config.proxy),
+            timeout=30,
+        )
+        self._raise_for_response(response, "Graph API 重命名文件夹失败")
+        folder = self._normalize_graph_folder(response.json()) if response.content else {
+            "id": folder_id,
+            "name": display_name,
+            "display_name": display_name,
+            "kind": self._resolve_folder_kind(display_name),
+            "total": 0,
+            "unread": 0,
+            "is_default": False,
+        }
+        folder["status"] = "renamed"
+        return folder
+
+    def _delete_folder_graph(self, config: MailboxConfig, payload: dict[str, Any]) -> dict[str, Any]:
+        token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
+        folder_id = self._require_payload_text(payload, "folder_id", "缺少文件夹标识")
+        response = requests.delete(
+            GRAPH_MAIL_FOLDER_URL.format(folder_id=quote(self._normalize_graph_folder_id(folder_id), safe="")),
+            headers={"Authorization": f"Bearer {token}"},
+            proxies=self._build_requests_proxies(config.proxy),
+            timeout=30,
+        )
+        self._raise_for_response(response, "Graph API 删除文件夹失败")
+        return {
+            "id": folder_id,
             "status": "deleted",
         }
 
@@ -794,6 +1306,94 @@ class OutlookMailboxManager:
                 "message_id": message_id,
                 "method": method,
                 "folder": folder_name,
+                "status": "deleted",
+            }
+        finally:
+            self._logout_imap(connection)
+
+    def _download_attachment_imap(
+        self,
+        config: MailboxConfig,
+        method: str,
+        message_id: str,
+        attachment_id: str,
+    ) -> dict[str, Any]:
+        token = self._get_access_token_for_imap(config, method)
+        connection = self._open_imap_connection(config.email, token, method)
+        folder_name = self._normalize_imap_folder_name(config.folder)
+
+        try:
+            self._select_imap_folder(connection, folder_name)
+            status, data = connection.uid("FETCH", message_id, "(BODY.PEEK[])")
+            if status != "OK" or not data:
+                raise MailboxError("下载附件失败")
+            raw_message = self._extract_raw_message(data)
+            message = email.message_from_bytes(raw_message)
+            attachment = self._extract_imap_attachment_content(message, attachment_id)
+            if not attachment:
+                raise MailboxError("附件不存在", code="attachment_not_found", status_code=404)
+            return attachment
+        finally:
+            self._logout_imap(connection)
+
+    def _create_folder_imap(self, config: MailboxConfig, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+        token = self._get_access_token_for_imap(config, method)
+        connection = self._open_imap_connection(config.email, token, method)
+        display_name = self._require_payload_text(payload, "display_name", "缺少文件夹名称")
+        parent_folder = self._normalize_optional_payload_text(payload.get("parent_folder_id") or payload.get("parent_folder"))
+        folder_name = f"{parent_folder}/{display_name}" if parent_folder else display_name
+        try:
+            status, _ = connection.create(self._quote_imap_mailbox(folder_name))
+            if status != "OK":
+                raise MailboxError("新建文件夹失败")
+            return {
+                "id": folder_name,
+                "name": folder_name,
+                "display_name": display_name,
+                "kind": self._resolve_folder_kind(display_name),
+                "total": 0,
+                "unread": 0,
+                "is_default": False,
+                "status": "created",
+            }
+        finally:
+            self._logout_imap(connection)
+
+    def _rename_folder_imap(self, config: MailboxConfig, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+        token = self._get_access_token_for_imap(config, method)
+        connection = self._open_imap_connection(config.email, token, method)
+        folder_id = self._require_payload_text(payload, "folder_id", "缺少文件夹标识")
+        display_name = self._require_payload_text(payload, "display_name", "缺少新的文件夹名称")
+        parent_folder = self._normalize_optional_payload_text(payload.get("parent_folder_id") or payload.get("parent_folder"))
+        new_folder_name = f"{parent_folder}/{display_name}" if parent_folder else display_name
+        try:
+            status, _ = connection.rename(self._quote_imap_mailbox(folder_id), self._quote_imap_mailbox(new_folder_name))
+            if status != "OK":
+                raise MailboxError("重命名文件夹失败")
+            return {
+                "id": new_folder_name,
+                "name": new_folder_name,
+                "display_name": display_name,
+                "kind": self._resolve_folder_kind(display_name),
+                "total": 0,
+                "unread": 0,
+                "is_default": False,
+                "status": "renamed",
+                "previous_id": folder_id,
+            }
+        finally:
+            self._logout_imap(connection)
+
+    def _delete_folder_imap(self, config: MailboxConfig, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+        token = self._get_access_token_for_imap(config, method)
+        connection = self._open_imap_connection(config.email, token, method)
+        folder_id = self._require_payload_text(payload, "folder_id", "缺少文件夹标识")
+        try:
+            status, _ = connection.delete(self._quote_imap_mailbox(folder_id))
+            if status != "OK":
+                raise MailboxError("删除文件夹失败")
+            return {
+                "id": folder_id,
                 "status": "deleted",
             }
         finally:
@@ -1161,6 +1761,92 @@ class OutlookMailboxManager:
             "is_inline": bool(attachment.get("isInline", False)),
         }
 
+    def _build_graph_message_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        body_html = self._normalize_optional_payload_text(payload.get("body_html"))
+        body_text = self._normalize_optional_payload_text(payload.get("body_text") or payload.get("body"))
+        body_type = "HTML" if body_html else "Text"
+        body_content = body_html or body_text or ""
+        message: dict[str, Any] = {
+            "subject": self._normalize_optional_payload_text(payload.get("subject")) or "",
+            "body": {
+                "contentType": body_type,
+                "content": body_content,
+            },
+        }
+
+        to_recipients = self._build_graph_recipient_payload(payload.get("to_recipients") or payload.get("to"))
+        cc_recipients = self._build_graph_recipient_payload(payload.get("cc_recipients") or payload.get("cc"))
+        bcc_recipients = self._build_graph_recipient_payload(payload.get("bcc_recipients") or payload.get("bcc"))
+        if to_recipients:
+            message["toRecipients"] = to_recipients
+        if cc_recipients:
+            message["ccRecipients"] = cc_recipients
+        if bcc_recipients:
+            message["bccRecipients"] = bcc_recipients
+        return message
+
+    def _build_graph_recipient_payload(self, values: Any) -> list[dict[str, Any]]:
+        recipients: list[dict[str, Any]] = []
+        if values in (None, ""):
+            return recipients
+        if not isinstance(values, list):
+            raise MailboxError("收件人列表必须是数组", code="invalid_recipients")
+        for item in values:
+            if not isinstance(item, str) or not item.strip():
+                raise MailboxError("收件人列表中存在无效地址", code="invalid_recipients")
+            name, address = parseaddr(item.strip())
+            if not address:
+                raise MailboxError("收件人地址无效", code="invalid_recipients")
+            recipients.append(
+                {
+                    "emailAddress": {
+                        "name": name or address,
+                        "address": address,
+                    }
+                }
+            )
+        return recipients
+
+    @staticmethod
+    def _payload_send_now(payload: dict[str, Any], *, default: bool) -> bool:
+        raw = payload.get("send_now")
+        return default if raw is None else bool(raw)
+
+    @staticmethod
+    def _payload_has_compose_updates(payload: dict[str, Any]) -> bool:
+        return any(
+            key in payload
+            for key in (
+                "subject",
+                "body",
+                "body_text",
+                "body_html",
+                "to",
+                "to_recipients",
+                "cc",
+                "cc_recipients",
+                "bcc",
+                "bcc_recipients",
+                "attachments",
+            )
+        )
+
+    @staticmethod
+    def _require_payload_text(payload: dict[str, Any], key: str, error_message: str) -> str:
+        value = OutlookMailboxManager._normalize_optional_payload_text(payload.get(key))
+        if not value:
+            raise MailboxError(error_message, code=f"invalid_{key}")
+        return value
+
+    @staticmethod
+    def _normalize_optional_payload_text(value: Any) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise MailboxError("请求参数类型错误", code="invalid_payload")
+        cleaned = value.strip()
+        return cleaned or None
+
     @staticmethod
     def _split_addresses(values: list[str]) -> list[str]:
         addresses: list[str] = []
@@ -1292,6 +1978,25 @@ class OutlookMailboxManager:
                 }
             )
         return attachments
+
+    def _extract_imap_attachment_content(self, message: Message, attachment_id: str) -> dict[str, Any] | None:
+        normalized_attachment_id = str(attachment_id or "").strip()
+        for index, part in enumerate(message.walk(), start=1):
+            candidate_id = f"part-{index}"
+            if candidate_id != normalized_attachment_id:
+                continue
+            file_name = part.get_filename()
+            disposition = (part.get_content_disposition() or "").casefold()
+            payload = part.get_payload(decode=True) or b""
+            return {
+                "id": candidate_id,
+                "name": self._decode_header_value(file_name or f"attachment-{index}"),
+                "content_type": part.get_content_type(),
+                "size": len(payload),
+                "is_inline": disposition == "inline",
+                "content_base64": base64.b64encode(payload).decode("ascii"),
+            }
+        return None
 
     def _normalize_message_headers(self, message: Message) -> dict[str, str]:
         normalized: dict[str, str] = {}
@@ -1595,6 +2300,51 @@ class MailboxManager:
             status=raw.get("status", "deleted"),
             source=OutlookMailboxManager.METHOD_LABELS.get(request.method, request.method),
         )
+
+    def save_draft(self, config: MailboxConfig, payload: dict[str, Any]) -> dict[str, Any]:
+        method = config.default_method
+        effective = replace(config, default_method=method, folder="drafts")
+        return self._inner.save_draft(effective, method, payload)
+
+    def send_message(self, config: MailboxConfig, payload: dict[str, Any]) -> dict[str, Any]:
+        method = config.default_method
+        effective = replace(config, default_method=method)
+        return self._inner.send_message(effective, method, payload)
+
+    def reply_message(self, config: MailboxConfig, message_id: str, payload: dict[str, Any], *, reply_all: bool = False) -> dict[str, Any]:
+        method = config.default_method
+        effective = replace(config, default_method=method)
+        return self._inner.reply_message(effective, method, message_id, payload, reply_all=reply_all)
+
+    def forward_message(self, config: MailboxConfig, message_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        method = config.default_method
+        effective = replace(config, default_method=method)
+        return self._inner.forward_message(effective, method, message_id, payload)
+
+    def upload_attachment(self, config: MailboxConfig, message_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        method = config.default_method
+        effective = replace(config, default_method=method)
+        return self._inner.upload_attachment(effective, method, message_id, payload)
+
+    def download_attachment(self, config: MailboxConfig, message_id: str, attachment_id: str) -> dict[str, Any]:
+        method = config.default_method
+        effective = replace(config, default_method=method)
+        return self._inner.download_attachment(effective, method, message_id, attachment_id)
+
+    def create_folder(self, config: MailboxConfig, payload: dict[str, Any]) -> dict[str, Any]:
+        method = config.default_method
+        effective = replace(config, default_method=method)
+        return self._inner.create_folder(effective, method, payload)
+
+    def rename_folder(self, config: MailboxConfig, payload: dict[str, Any]) -> dict[str, Any]:
+        method = config.default_method
+        effective = replace(config, default_method=method)
+        return self._inner.rename_folder(effective, method, payload)
+
+    def delete_folder(self, config: MailboxConfig, payload: dict[str, Any]) -> dict[str, Any]:
+        method = config.default_method
+        effective = replace(config, default_method=method)
+        return self._inner.delete_folder(effective, method, payload)
 
     def resolve_mailbox_email(
         self,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+
 from app import create_app
 from services.outlook_manager import MailboxError, MessageDetail, MessageListResult, MessageSummary
 from services.storage import MailboxStore
@@ -19,9 +21,19 @@ class RecordingManager:
         self.calls: list[tuple[object, object]] = []
         self.detail_calls: list[tuple[object, object]] = []
         self.folder_calls: list[tuple[object, object]] = []
+        self.read_calls: list[tuple[object, object]] = []
         self.flag_calls: list[tuple[object, object]] = []
         self.move_calls: list[tuple[object, object]] = []
         self.delete_calls: list[tuple[object, object]] = []
+        self.draft_calls: list[tuple[object, object]] = []
+        self.send_calls: list[tuple[object, object]] = []
+        self.reply_calls: list[tuple[object, object, object, bool]] = []
+        self.forward_calls: list[tuple[object, object, object]] = []
+        self.upload_attachment_calls: list[tuple[object, object, object]] = []
+        self.download_attachment_calls: list[tuple[object, object, object]] = []
+        self.folder_create_calls: list[tuple[object, object]] = []
+        self.folder_rename_calls: list[tuple[object, object]] = []
+        self.folder_delete_calls: list[tuple[object, object]] = []
 
     def list_messages(self, config: object, request: object) -> object:
         self.calls.append((config, request))
@@ -119,6 +131,15 @@ class RecordingManager:
             "status": "updated",
         }
 
+    def update_read_state(self, config: object, request: object) -> object:
+        self.read_calls.append((config, request))
+        return {
+            "method": getattr(request, "method", "graph_api"),
+            "message_id": request.message_id,
+            "is_read": bool(request.is_read),
+            "status": "updated",
+        }
+
     def move_message(self, config: object, request: object) -> object:
         self.move_calls.append((config, request))
         return {
@@ -137,6 +158,220 @@ class RecordingManager:
             "folder": getattr(request, "folder", "INBOX"),
             "status": "deleted",
         }
+
+    def save_draft(self, config: object, payload: object) -> object:
+        self.draft_calls.append((config, payload))
+        attachments = [
+            {
+                "id": item.get("id") or f"draft-att-{index}",
+                "name": item["name"],
+                "content_type": item.get("content_type", "application/octet-stream"),
+                "size": len(base64.b64decode(item["content_base64"])),
+                "is_inline": bool(item.get("is_inline", False)),
+                "content_base64": item["content_base64"],
+                "content_id": item.get("content_id", ""),
+            }
+            for index, item in enumerate(payload.get("attachments", []), start=1)
+        ]
+        return {
+            "method": getattr(config, "default_method", "graph_api"),
+            "message_id": "draft-001",
+            "subject": payload.get("subject", "Draft subject"),
+            "sender": getattr(config, "email", ""),
+            "sender_name": "Draft Sender",
+            "received_at": "2026-03-13T00:00:00Z",
+            "is_read": True,
+            "has_attachments": bool(payload.get("attachments")),
+            "preview": payload.get("body_text", "Draft body"),
+            "source": "Graph API",
+            "folder": "drafts",
+            "internet_message_id": "<draft-001>",
+            "is_flagged": False,
+            "importance": "normal",
+            "conversation_id": "conv-draft",
+            "body_text": payload.get("body_text", "Draft body"),
+            "body_html": payload.get("body_html"),
+            "to": payload.get("to_recipients", []),
+            "cc": payload.get("cc_recipients", []),
+            "bcc": payload.get("bcc_recipients", []),
+            "headers": {"Message-ID": "<draft-001>"},
+            "attachments": attachments,
+            "status": "draft_saved",
+        }
+
+    def send_message(self, config: object, payload: object) -> object:
+        self.send_calls.append((config, payload))
+        attachments = [
+            {
+                "id": item.get("id") or f"sent-att-{index}",
+                "name": item["name"],
+                "content_type": item.get("content_type", "application/octet-stream"),
+                "size": len(base64.b64decode(item["content_base64"])),
+                "is_inline": bool(item.get("is_inline", False)),
+                "content_base64": item["content_base64"],
+                "content_id": item.get("content_id", ""),
+            }
+            for index, item in enumerate(payload.get("attachments", []), start=1)
+        ]
+        return {
+            "method": getattr(config, "default_method", "graph_api"),
+            "message_id": "sent-001",
+            "subject": payload.get("subject", "Sent subject"),
+            "sender": getattr(config, "email", ""),
+            "sender_name": "Sender",
+            "received_at": "2026-03-13T00:00:00Z",
+            "is_read": True,
+            "has_attachments": bool(payload.get("attachments")),
+            "preview": payload.get("body_text", "Sent body"),
+            "source": "Graph API",
+            "folder": "sentitems",
+            "internet_message_id": "<sent-001>",
+            "is_flagged": False,
+            "importance": "normal",
+            "conversation_id": "conv-sent",
+            "body_text": payload.get("body_text", "Sent body"),
+            "body_html": payload.get("body_html"),
+            "to": payload.get("to_recipients", []),
+            "cc": payload.get("cc_recipients", []),
+            "bcc": payload.get("bcc_recipients", []),
+            "headers": {"Message-ID": "<sent-001>"},
+            "attachments": attachments,
+            "status": "sent",
+        }
+
+    def reply_message(self, config: object, message_id: str, payload: object, *, reply_all: bool = False) -> object:
+        self.reply_calls.append((config, message_id, payload, reply_all))
+        attachments = [
+            {
+                "id": item.get("id") or f"reply-att-{index}",
+                "name": item["name"],
+                "content_type": item.get("content_type", "application/octet-stream"),
+                "size": len(base64.b64decode(item["content_base64"])),
+                "is_inline": bool(item.get("is_inline", False)),
+                "content_base64": item["content_base64"],
+                "content_id": item.get("content_id", ""),
+            }
+            for index, item in enumerate(payload.get("attachments", []), start=1)
+        ]
+        return {
+            "method": getattr(config, "default_method", "graph_api"),
+            "message_id": "reply-001",
+            "subject": "Re: Detail subject",
+            "sender": getattr(config, "email", ""),
+            "sender_name": "Sender",
+            "received_at": "2026-03-13T00:00:00Z",
+            "is_read": True,
+            "has_attachments": bool(payload.get("attachments")),
+            "preview": payload.get("body_text", "Reply body"),
+            "source": "Graph API",
+            "folder": "sentitems" if payload.get("send_now", True) else "drafts",
+            "internet_message_id": "<reply-001>",
+            "is_flagged": False,
+            "importance": "normal",
+            "conversation_id": "conv-1",
+            "body_text": payload.get("body_text", "Reply body"),
+            "body_html": payload.get("body_html"),
+            "to": payload.get("to_recipients", ["sender@example.com"]),
+            "cc": payload.get("cc_recipients", []),
+            "bcc": payload.get("bcc_recipients", []),
+            "headers": {"In-Reply-To": message_id},
+            "attachments": attachments,
+            "status": "sent" if payload.get("send_now", True) else "draft_saved",
+        }
+
+    def forward_message(self, config: object, message_id: str, payload: object) -> object:
+        self.forward_calls.append((config, message_id, payload))
+        attachments = [
+            {
+                "id": item.get("id") or f"forward-att-{index}",
+                "name": item["name"],
+                "content_type": item.get("content_type", "application/octet-stream"),
+                "size": len(base64.b64decode(item["content_base64"])),
+                "is_inline": bool(item.get("is_inline", False)),
+                "content_base64": item["content_base64"],
+                "content_id": item.get("content_id", ""),
+            }
+            for index, item in enumerate(payload.get("attachments", []), start=1)
+        ]
+        return {
+            "method": getattr(config, "default_method", "graph_api"),
+            "message_id": "forward-001",
+            "subject": "Fwd: Detail subject",
+            "sender": getattr(config, "email", ""),
+            "sender_name": "Sender",
+            "received_at": "2026-03-13T00:00:00Z",
+            "is_read": True,
+            "has_attachments": bool(payload.get("attachments")),
+            "preview": payload.get("body_text", "Forward body"),
+            "source": "Graph API",
+            "folder": "sentitems",
+            "internet_message_id": "<forward-001>",
+            "is_flagged": False,
+            "importance": "normal",
+            "conversation_id": "conv-forward",
+            "body_text": payload.get("body_text", "Forward body"),
+            "body_html": payload.get("body_html"),
+            "to": payload.get("to_recipients", ["target@example.com"]),
+            "cc": payload.get("cc_recipients", []),
+            "bcc": payload.get("bcc_recipients", []),
+            "headers": {"References": message_id},
+            "attachments": attachments,
+            "status": "sent",
+        }
+
+    def upload_attachment(self, config: object, message_id: str, payload: object) -> object:
+        self.upload_attachment_calls.append((config, message_id, payload))
+        return {
+            "id": "att-upload-001",
+            "name": payload["name"],
+            "content_type": payload.get("content_type", "text/plain"),
+            "size": len(base64.b64decode(payload["content_base64"])),
+            "is_inline": bool(payload.get("is_inline", False)),
+            "content_base64": payload["content_base64"],
+            "content_id": payload.get("content_id", ""),
+        }
+
+    def download_attachment(self, config: object, message_id: str, attachment_id: str) -> object:
+        self.download_attachment_calls.append((config, message_id, attachment_id))
+        return {
+            "id": attachment_id,
+            "name": "report.txt",
+            "content_type": "text/plain",
+            "size": 5,
+            "is_inline": False,
+            "content_base64": base64.b64encode(b"hello").decode("ascii"),
+            "content_id": "",
+        }
+
+    def create_folder(self, config: object, payload: object) -> object:
+        self.folder_create_calls.append((config, payload))
+        return {
+            "id": "Projects",
+            "name": "Projects",
+            "display_name": payload["display_name"],
+            "kind": "custom",
+            "total": 0,
+            "unread": 0,
+            "is_default": False,
+            "status": "created",
+        }
+
+    def rename_folder(self, config: object, payload: object) -> object:
+        self.folder_rename_calls.append((config, payload))
+        return {
+            "id": payload["display_name"],
+            "name": payload["display_name"],
+            "display_name": payload["display_name"],
+            "kind": "custom",
+            "total": 0,
+            "unread": 0,
+            "is_default": False,
+            "status": "renamed",
+        }
+
+    def delete_folder(self, config: object, payload: object) -> object:
+        self.folder_delete_calls.append((config, payload))
+        return {"id": payload["folder_id"], "status": "deleted"}
 
     def resolve_mailbox_email(self, *, client_id: str, refresh_token: str, proxy: str | None = None) -> str:
         if self.resolve_email_error:
@@ -987,3 +1222,213 @@ def test_mailbox_batch_actions_support_flag_move_and_delete(tmp_path) -> None:
     assert payload["results"][0]["success"] is True
     assert payload["results"][0]["result"]["destination_folder"] == "archive"
     assert len(manager.move_calls) == 2
+
+
+def test_mailbox_compose_routes_cover_draft_send_reply_and_forward(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    mailbox = create_mailbox(store, label="Compose Box", email="compose@example.com")
+    manager = RecordingManager()
+    client = build_client(store, manager)
+    content = base64.b64encode(b"hello").decode("ascii")
+
+    draft_response = client.post(
+        "/api/mailbox/message/draft",
+        json={
+            "mailbox_id": mailbox.id,
+            "subject": "Draft subject",
+            "body_text": "Draft body",
+            "to_recipients": ["draft@example.com"],
+            "attachments": [{"name": "draft.txt", "content_base64": content, "content_type": "text/plain"}],
+        },
+    )
+    send_response = client.post(
+        "/api/mailbox/message/send",
+        json={
+            "mailbox_id": mailbox.id,
+            "subject": "Send subject",
+            "body_text": "Send body",
+            "to_recipients": ["target@example.com"],
+        },
+    )
+    reply_all_response = client.post(
+        "/api/mailbox/message/reply-all",
+        json={
+            "mailbox_id": mailbox.id,
+            "message_id": "msg-001",
+            "body_text": "Reply body",
+        },
+    )
+    forward_response = client.post(
+        "/api/mailbox/message/forward",
+        json={
+            "mailbox_id": mailbox.id,
+            "message_id": "msg-001",
+            "body_text": "Forward body",
+            "to_recipients": ["forward@example.com"],
+        },
+    )
+
+    assert draft_response.status_code == 200
+    assert draft_response.get_json()["message"]["folder"] == "drafts"
+    assert send_response.status_code == 200
+    assert send_response.get_json()["message"]["status"] == "sent"
+    assert reply_all_response.status_code == 200
+    assert reply_all_response.get_json()["message"]["conversation_id"] == "conv-1"
+    assert forward_response.status_code == 200
+    assert forward_response.get_json()["message"]["subject"] == "Fwd: Detail subject"
+    assert len(manager.draft_calls) == 1
+    assert len(manager.send_calls) == 1
+    assert len(manager.reply_calls) == 1
+    assert manager.reply_calls[0][3] is True
+    assert len(manager.forward_calls) == 1
+
+
+def test_mailbox_attachment_folder_meta_search_thread_and_rules_routes(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    mailbox = create_mailbox(store, label="Ops Box", email="ops@example.com")
+    manager = RecordingManager()
+    client = build_client(store, manager)
+    content = base64.b64encode(b"hello").decode("ascii")
+
+    upload_response = client.post(
+        "/api/mailbox/message/attachment/upload",
+        json={
+            "mailbox_id": mailbox.id,
+            "message_id": "draft-001",
+            "name": "report.txt",
+            "content_type": "text/plain",
+            "content_base64": content,
+        },
+    )
+    download_response = client.post(
+        "/api/mailbox/message/attachment/download",
+        json={
+            "mailbox_id": mailbox.id,
+            "message_id": "draft-001",
+            "attachment_id": "att-upload-001",
+        },
+    )
+    create_folder_response = client.post(
+        "/api/mailbox/folder/create",
+        json={"mailbox_id": mailbox.id, "display_name": "Projects"},
+    )
+    rename_folder_response = client.post(
+        "/api/mailbox/folder/rename",
+        json={"mailbox_id": mailbox.id, "folder_id": "Projects", "display_name": "Projects 2026"},
+    )
+    delete_folder_response = client.post(
+        "/api/mailbox/folder/delete",
+        json={"mailbox_id": mailbox.id, "folder_id": "Projects 2026"},
+    )
+    client.post("/api/mailbox/messages", json={"mailbox_id": mailbox.id, "method": "graph_api"})
+    meta_response = client.post(
+        "/api/mailbox/message/meta",
+        json={
+            "mailbox_id": mailbox.id,
+            "method": "graph_api",
+            "message_id": "msg-001",
+            "tags": ["vip", "follow-up"],
+            "notes": "Need action",
+            "follow_up": "today",
+            "snoozed_until": "2026-03-23T00:00:00Z",
+            "status": "snoozed",
+        },
+    )
+    search_response = client.post(
+        "/api/mailboxes/messages/search",
+        json={"query": "welcome", "mailbox_ids": [mailbox.id], "method": "graph_api"},
+    )
+    thread_response = client.post(
+        "/api/mailbox/thread",
+        json={"mailbox_id": mailbox.id, "method": "graph_api", "message_id": "msg-001"},
+    )
+    rule_response = client.post(
+        "/api/mailbox/rules",
+        json={
+            "mailbox_id": mailbox.id,
+            "name": "Read Welcome",
+            "enabled": True,
+            "priority": 10,
+            "conditions": {"subject_contains": "Welcome"},
+            "actions": {"mark_read": True, "tags": ["ruled"]},
+        },
+    )
+    apply_response = client.post(
+        "/api/mailbox/rules/apply",
+        json={"mailbox_id": mailbox.id, "method": "graph_api"},
+    )
+
+    assert upload_response.status_code == 200
+    assert upload_response.get_json()["attachment"]["name"] == "report.txt"
+    assert download_response.status_code == 200
+    assert download_response.get_json()["attachment"]["content_base64"] == content
+    assert create_folder_response.status_code == 200
+    assert rename_folder_response.status_code == 200
+    assert delete_folder_response.status_code == 200
+    assert meta_response.status_code == 200
+    assert meta_response.get_json()["meta"]["tags"] == ["vip", "follow-up"]
+    assert search_response.status_code == 200
+    assert search_response.get_json()["items"][0]["subject"] == "Welcome mail"
+    assert thread_response.status_code == 200
+    assert thread_response.get_json()["count"] == 1
+    assert rule_response.status_code == 201
+    assert apply_response.status_code == 200
+    assert apply_response.get_json()["results"][0]["matched"] == 1
+    assert len(manager.read_calls) == 1
+    assert len(manager.upload_attachment_calls) == 1
+    assert len(manager.download_attachment_calls) == 1
+    assert len(manager.folder_create_calls) == 1
+    assert len(manager.folder_rename_calls) == 1
+    assert len(manager.folder_delete_calls) == 1
+
+
+def test_audit_logs_and_sync_center_routes_return_persisted_state(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    mailbox = create_mailbox(store, label="Sync Box", email="sync@example.com")
+    manager = RecordingManager()
+    client = build_client(store, manager)
+
+    client.post(
+        "/api/mailbox/rules",
+        json={
+            "mailbox_id": mailbox.id,
+            "name": "Sync Rule",
+            "enabled": True,
+            "priority": 5,
+            "conditions": {"subject_contains": "Welcome"},
+            "actions": {"mark_read": True},
+        },
+    )
+    sync_response = client.post(
+        "/api/mailbox/sync/run",
+        json={
+            "mailbox_id": mailbox.id,
+            "method": "graph_api",
+            "folder_limit": 1,
+            "message_limit": 1,
+            "include_body": True,
+            "apply_rules": False,
+        },
+    )
+    status_response = client.post(
+        "/api/mailbox/sync/status",
+        json={"mailbox_id": mailbox.id, "method": "graph_api"},
+    )
+    audit_response = client.post(
+        "/api/audit/logs",
+        json={"mailbox_id": mailbox.id, "page": 1, "page_size": 20},
+    )
+
+    assert sync_response.status_code == 200
+    sync_payload = sync_response.get_json()
+    assert sync_payload["count"] == 1
+    assert sync_payload["results"][0]["job"]["status"] == "completed"
+
+    assert status_response.status_code == 200
+    status_payload = status_response.get_json()
+    assert status_payload["items"][0]["jobs"][0]["status"] == "completed"
+    assert status_payload["items"][0]["states"][0]["status"] == "completed"
+
+    assert audit_response.status_code == 200
+    audit_payload = audit_response.get_json()
+    assert audit_payload["meta"]["total"] >= 1

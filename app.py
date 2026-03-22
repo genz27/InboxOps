@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import base64
 import csv
 import hmac
 import json
@@ -410,6 +411,7 @@ def create_app(
         method = _normalize_method(payload.get("method") or profile.preferred_method)
         config = _profile_to_config(profile, method=method)
         folders = mailbox_manager.list_folders(config, method)
+        mailbox_store.cache_folders(profile.id, method, _to_jsonable(folders))
         return jsonify({"mailbox": _to_jsonable(profile), "method": method, "folders": _to_jsonable(folders)})
 
     @app.post("/api/mailbox/messages")
@@ -422,6 +424,7 @@ def create_app(
         result = mailbox_manager.list_messages(config, query)
         messages = result.messages if hasattr(result, "messages") else result
         count = getattr(result, "returned", len(messages))
+        mailbox_store.cache_messages(profile.id, query.method, _to_jsonable(messages))
         return jsonify(
             {
                 "mailbox": _to_jsonable(profile),
@@ -452,6 +455,7 @@ def create_app(
         result = mailbox_manager.list_messages(config, query)
         messages = result.messages if hasattr(result, "messages") else result
         count = getattr(result, "returned", len(messages))
+        mailbox_store.cache_messages(profile.id, query.method, _to_jsonable(messages))
         return jsonify(
             {
                 "mailbox": _profile_to_public_mailbox(profile),
@@ -480,6 +484,7 @@ def create_app(
         detail_request = _build_detail_request(payload, default_method=profile.preferred_method)
         config = _profile_to_config(profile, method=detail_request.method)
         message = mailbox_manager.get_message_detail(config, detail_request)
+        mailbox_store.cache_message(profile.id, detail_request.method, _to_jsonable(message))
         return jsonify({"mailbox": _to_jsonable(profile), "message": _to_jsonable(message)})
 
     @app.post("/api/key/mailbox/message")
@@ -490,6 +495,7 @@ def create_app(
         detail_request = _build_detail_request(payload, default_method=profile.preferred_method)
         config = _profile_to_config(profile, method=detail_request.method)
         message = mailbox_manager.get_message_detail(config, detail_request)
+        mailbox_store.cache_message(profile.id, detail_request.method, _to_jsonable(message))
         return jsonify(
             {
                 "mailbox": _profile_to_public_mailbox(profile),
@@ -513,6 +519,7 @@ def create_app(
                 folder=state_request.folder,
             ),
         )
+        mailbox_store.cache_message(profile.id, state_request.method, _to_jsonable(message))
         return jsonify({"mailbox": _to_jsonable(profile), "message": _to_jsonable(message)})
 
     @app.post("/api/mailbox/message/flag-state")
@@ -531,6 +538,7 @@ def create_app(
                 folder=state_request.folder,
             ),
         )
+        mailbox_store.cache_message(profile.id, state_request.method, _to_jsonable(message))
         return jsonify({"mailbox": _to_jsonable(profile), "message": _to_jsonable(message)})
 
     @app.post("/api/mailbox/message/move")
@@ -541,6 +549,12 @@ def create_app(
         move_request = _build_move_request(payload, default_method=profile.preferred_method)
         config = _profile_to_config(profile, method=move_request.method)
         result = mailbox_manager.move_message(config, move_request)
+        mailbox_store.update_cached_message_state(
+            profile.id,
+            move_request.method,
+            move_request.message_id,
+            folder_id=move_request.destination_folder,
+        )
         return jsonify({"mailbox": _to_jsonable(profile), "result": _to_jsonable(result)})
 
     @app.post("/api/mailbox/message/delete")
@@ -551,6 +565,7 @@ def create_app(
         delete_request = _build_delete_request(payload, default_method=profile.preferred_method)
         config = _profile_to_config(profile, method=delete_request.method)
         result = mailbox_manager.delete_message(config, delete_request)
+        mailbox_store.remove_cached_message(profile.id, delete_request.method, delete_request.message_id)
         return jsonify({"mailbox": _to_jsonable(profile), "result": _to_jsonable(result)})
 
     @app.post("/api/mailbox/messages/actions/batch")
@@ -643,6 +658,580 @@ def create_app(
                 },
             }
         )
+
+    @app.post("/api/mailbox/message/draft")
+    @auth_required
+    def mailbox_message_draft() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        method = _normalize_method(payload.get("method") or profile.preferred_method)
+        config = _profile_to_config(profile, method=method)
+        draft = mailbox_manager.save_draft(config, _build_compose_payload(payload, require_to=False))
+        mailbox_store.cache_message(profile.id, method, draft)
+        mailbox_store.record_audit_log(
+            mailbox_id=profile.id,
+            actor="admin",
+            action="draft_saved",
+            target_type="message",
+            target_id=str(draft.get("message_id", "")),
+            details={"method": method},
+        )
+        return jsonify({"mailbox": _to_jsonable(profile), "message": _to_jsonable(draft)})
+
+    @app.post("/api/mailbox/message/send")
+    @auth_required
+    def mailbox_message_send() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        method = _normalize_method(payload.get("method") or profile.preferred_method)
+        config = _profile_to_config(profile, method=method)
+        result = mailbox_manager.send_message(config, _build_compose_payload(payload, require_to=True))
+        if result.get("message_id"):
+            mailbox_store.cache_message(profile.id, method, result)
+        mailbox_store.record_audit_log(
+            mailbox_id=profile.id,
+            actor="admin",
+            action="message_sent",
+            target_type="message",
+            target_id=str(result.get("message_id", "")),
+            details={"method": method},
+        )
+        return jsonify({"mailbox": _to_jsonable(profile), "message": _to_jsonable(result)})
+
+    @app.post("/api/mailbox/message/reply")
+    @auth_required
+    def mailbox_message_reply() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        method = _normalize_method(payload.get("method") or profile.preferred_method)
+        message_id = _require_text(payload, "message_id", "缺少邮件标识")
+        config = _profile_to_config(profile, method=method)
+        result = mailbox_manager.reply_message(
+            config,
+            message_id,
+            _build_compose_payload(payload, require_to=False),
+            reply_all=False,
+        )
+        mailbox_store.cache_message(profile.id, method, result)
+        mailbox_store.record_audit_log(
+            mailbox_id=profile.id,
+            actor="admin",
+            action="message_replied",
+            target_type="message",
+            target_id=message_id,
+            details={"method": method},
+        )
+        return jsonify({"mailbox": _to_jsonable(profile), "message": _to_jsonable(result)})
+
+    @app.post("/api/mailbox/message/reply-all")
+    @auth_required
+    def mailbox_message_reply_all() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        method = _normalize_method(payload.get("method") or profile.preferred_method)
+        message_id = _require_text(payload, "message_id", "缺少邮件标识")
+        config = _profile_to_config(profile, method=method)
+        result = mailbox_manager.reply_message(
+            config,
+            message_id,
+            _build_compose_payload(payload, require_to=False),
+            reply_all=True,
+        )
+        mailbox_store.cache_message(profile.id, method, result)
+        mailbox_store.record_audit_log(
+            mailbox_id=profile.id,
+            actor="admin",
+            action="message_replied_all",
+            target_type="message",
+            target_id=message_id,
+            details={"method": method},
+        )
+        return jsonify({"mailbox": _to_jsonable(profile), "message": _to_jsonable(result)})
+
+    @app.post("/api/mailbox/message/forward")
+    @auth_required
+    def mailbox_message_forward() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        method = _normalize_method(payload.get("method") or profile.preferred_method)
+        message_id = _require_text(payload, "message_id", "缺少邮件标识")
+        config = _profile_to_config(profile, method=method)
+        result = mailbox_manager.forward_message(
+            config,
+            message_id,
+            _build_compose_payload(payload, require_to=True),
+        )
+        mailbox_store.cache_message(profile.id, method, result)
+        mailbox_store.record_audit_log(
+            mailbox_id=profile.id,
+            actor="admin",
+            action="message_forwarded",
+            target_type="message",
+            target_id=message_id,
+            details={"method": method},
+        )
+        return jsonify({"mailbox": _to_jsonable(profile), "message": _to_jsonable(result)})
+
+    @app.post("/api/mailbox/message/attachment/upload")
+    @auth_required
+    def mailbox_message_attachment_upload() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        method = _normalize_method(payload.get("method") or profile.preferred_method)
+        message_id = _require_text(payload, "message_id", "缺少邮件标识")
+        config = _profile_to_config(profile, method=method)
+        attachment_payload = _build_attachment_payload(payload)
+        attachment = mailbox_manager.upload_attachment(config, message_id, attachment_payload)
+        mailbox_store.ensure_cached_message_placeholder(profile.id, method, message_id, folder_id="drafts")
+        mailbox_store.upsert_attachment_content(profile.id, method, message_id, attachment)
+        mailbox_store.record_audit_log(
+            mailbox_id=profile.id,
+            actor="admin",
+            action="attachment_uploaded",
+            target_type="attachment",
+            target_id=str(attachment.get("id") or attachment.get("attachment_id", "")),
+            details={"message_id": message_id, "method": method},
+        )
+        return jsonify({"mailbox": _to_jsonable(profile), "attachment": _to_jsonable(attachment)})
+
+    @app.post("/api/mailbox/message/attachment/download")
+    @auth_required
+    def mailbox_message_attachment_download() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        method = _normalize_method(payload.get("method") or profile.preferred_method)
+        message_id = _require_text(payload, "message_id", "缺少邮件标识")
+        attachment_id = _require_text(payload, "attachment_id", "缺少附件标识")
+        config = _profile_to_config(profile, method=method)
+        attachment = mailbox_manager.download_attachment(config, message_id, attachment_id)
+        mailbox_store.ensure_cached_message_placeholder(
+            profile.id,
+            method,
+            message_id,
+            folder_id=_optional_text(payload.get("folder")) or "",
+        )
+        mailbox_store.upsert_attachment_content(profile.id, method, message_id, attachment)
+        return jsonify({"mailbox": _to_jsonable(profile), "attachment": _to_jsonable(attachment)})
+
+    @app.post("/api/mailbox/folder/create")
+    @auth_required
+    def mailbox_folder_create() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        method = _normalize_method(payload.get("method") or profile.preferred_method)
+        config = _profile_to_config(profile, method=method)
+        folder = mailbox_manager.create_folder(config, payload)
+        mailbox_store.cache_folders(profile.id, method, _to_jsonable(mailbox_manager.list_folders(config, method)))
+        mailbox_store.record_audit_log(
+            mailbox_id=profile.id,
+            actor="admin",
+            action="folder_created",
+            target_type="folder",
+            target_id=str(folder.get("id", "")),
+            details={"method": method},
+        )
+        return jsonify({"mailbox": _to_jsonable(profile), "folder": _to_jsonable(folder)})
+
+    @app.post("/api/mailbox/folder/rename")
+    @auth_required
+    def mailbox_folder_rename() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        method = _normalize_method(payload.get("method") or profile.preferred_method)
+        config = _profile_to_config(profile, method=method)
+        folder = mailbox_manager.rename_folder(config, payload)
+        mailbox_store.cache_folders(profile.id, method, _to_jsonable(mailbox_manager.list_folders(config, method)))
+        mailbox_store.record_audit_log(
+            mailbox_id=profile.id,
+            actor="admin",
+            action="folder_renamed",
+            target_type="folder",
+            target_id=str(folder.get("id", "")),
+            details={"method": method},
+        )
+        return jsonify({"mailbox": _to_jsonable(profile), "folder": _to_jsonable(folder)})
+
+    @app.post("/api/mailbox/folder/delete")
+    @auth_required
+    def mailbox_folder_delete() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        method = _normalize_method(payload.get("method") or profile.preferred_method)
+        config = _profile_to_config(profile, method=method)
+        folder = mailbox_manager.delete_folder(config, payload)
+        mailbox_store.cache_folders(profile.id, method, _to_jsonable(mailbox_manager.list_folders(config, method)))
+        mailbox_store.record_audit_log(
+            mailbox_id=profile.id,
+            actor="admin",
+            action="folder_deleted",
+            target_type="folder",
+            target_id=str(folder.get("id", "")),
+            details={"method": method},
+        )
+        return jsonify({"mailbox": _to_jsonable(profile), "folder": _to_jsonable(folder)})
+
+    @app.post("/api/mailbox/message/meta")
+    @auth_required
+    def mailbox_message_meta() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        method = _normalize_method(payload.get("method") or profile.preferred_method)
+        message_id = _require_text(payload, "message_id", "缺少邮件标识")
+        if not mailbox_store.get_cached_message(profile.id, method, message_id):
+            folder = _optional_text(payload.get("folder")) or "INBOX"
+            config = _profile_to_config(profile, method=method)
+            try:
+                detail = mailbox_manager.get_message_detail(
+                    config,
+                    MailboxDetailRequest(method=method, message_id=message_id, folder=folder),
+                )
+                mailbox_store.cache_message(profile.id, method, _to_jsonable(detail))
+            except Exception:
+                mailbox_store.ensure_cached_message_placeholder(profile.id, method, message_id, folder_id=folder)
+        meta = mailbox_store.update_message_meta(
+            profile.id,
+            method,
+            message_id,
+            tags=_optional_text_list(payload.get("tags"), field_name="tags"),
+            follow_up=_optional_text(payload.get("follow_up")),
+            notes=_optional_text(payload.get("notes")),
+            snoozed_until=_optional_text(payload.get("snoozed_until")),
+            status=_optional_text(payload.get("status")),
+        )
+        message = mailbox_store.get_cached_message(profile.id, method, message_id)
+        mailbox_store.record_audit_log(
+            mailbox_id=profile.id,
+            actor="admin",
+            action="message_meta_updated",
+            target_type="message",
+            target_id=message_id,
+            details={"method": method},
+        )
+        return jsonify({"mailbox": _to_jsonable(profile), "meta": _to_jsonable(meta), "message": _to_jsonable(message)})
+
+    @app.post("/api/mailboxes/messages/search")
+    @auth_required
+    def mailbox_messages_search() -> Any:
+        payload = request.get_json(silent=True) or {}
+        method = _optional_text(payload.get("method"))
+        page = _parse_positive_int(payload.get("page"), field_name="page", default=1, minimum=1)
+        page_size = _parse_positive_int(payload.get("page_size"), field_name="page_size", default=20, minimum=1, maximum=100)
+        mailbox_ids = _parse_optional_mailbox_ids(payload.get("mailbox_ids"))
+        tags = _optional_text_list(payload.get("tags"), field_name="tags")
+        results, total = mailbox_store.search_messages(
+            _optional_text(payload.get("query")) or _optional_text(payload.get("keyword")),
+            mailbox_ids=mailbox_ids or None,
+            method=_normalize_method(method) if method else None,
+            folder=_optional_text(payload.get("folder")),
+            tag=tags[0] if tags else _optional_text(payload.get("tag")),
+            unread_only=_parse_bool(payload.get("unread_only"), field_name="unread_only", default=False),
+            flagged_only=_parse_bool(payload.get("flagged_only"), field_name="flagged_only", default=False),
+            has_attachments_only=_parse_bool(
+                payload.get("has_attachments_only"),
+                field_name="has_attachments_only",
+                default=False,
+            ),
+            include_snoozed=_parse_bool(payload.get("include_snoozed"), field_name="include_snoozed", default=True),
+            page=page,
+            page_size=page_size,
+            sort_order=_normalize_sort_order(payload.get("sort_order")),
+        )
+        total_pages = (total + page_size - 1) // page_size if total else 0
+        return jsonify(
+            {
+                "items": _to_jsonable(results),
+                "meta": {
+                    "page": page,
+                    "page_size": page_size,
+                    "total": total,
+                    "total_pages": total_pages,
+                    "has_prev": page > 1,
+                    "has_next": page < total_pages,
+                },
+            }
+        )
+
+    @app.post("/api/mailbox/thread")
+    @auth_required
+    def mailbox_thread() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        method = _optional_text(payload.get("method"))
+        message_id = _optional_text(payload.get("message_id"))
+        conversation_id = _optional_text(payload.get("conversation_id"))
+        if message_id and method and not mailbox_store.get_cached_message(profile.id, _normalize_method(method), message_id):
+            folder = _optional_text(payload.get("folder")) or "INBOX"
+            normalized_method = _normalize_method(method)
+            config = _profile_to_config(profile, method=normalized_method)
+            try:
+                detail = mailbox_manager.get_message_detail(
+                    config,
+                    MailboxDetailRequest(method=normalized_method, message_id=message_id, folder=folder),
+                )
+                mailbox_store.cache_message(profile.id, normalized_method, _to_jsonable(detail))
+            except Exception:
+                pass
+        thread = mailbox_store.list_thread_messages(
+            profile.id,
+            method=_normalize_method(method) if method else None,
+            conversation_id=conversation_id,
+            message_id=message_id,
+        )
+        return jsonify({"mailbox": _to_jsonable(profile), "items": _to_jsonable(thread), "count": len(thread)})
+
+    @app.post("/api/mailbox/rules/list")
+    @auth_required
+    def mailbox_rules_list() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        rules = mailbox_store.list_rules(profile.id, enabled_only=_parse_bool(payload.get("enabled_only"), field_name="enabled_only", default=False))
+        return jsonify({"mailbox": _to_jsonable(profile), "items": _to_jsonable(rules), "count": len(rules)})
+
+    @app.post("/api/mailbox/rules")
+    @auth_required
+    def mailbox_rules_create() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        rule = mailbox_store.create_rule(
+            profile.id,
+            name=_require_text(payload, "name", "规则名称不能为空"),
+            enabled=_parse_bool(payload.get("enabled"), field_name="enabled", default=True),
+            priority=_parse_positive_int(payload.get("priority"), field_name="priority", default=100, minimum=1, maximum=9999),
+            conditions=_optional_object(payload.get("conditions"), field_name="conditions"),
+            actions=_optional_object(payload.get("actions"), field_name="actions"),
+        )
+        mailbox_store.record_audit_log(
+            mailbox_id=profile.id,
+            actor="admin",
+            action="rule_created",
+            target_type="rule",
+            target_id=str(rule.id),
+            details={"name": rule.name},
+        )
+        return jsonify({"mailbox": _to_jsonable(profile), "rule": _to_jsonable(rule)}), 201
+
+    @app.post("/api/mailbox/rules/update")
+    @auth_required
+    def mailbox_rules_update() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        rule_id = _parse_positive_int(payload.get("rule_id"), field_name="rule_id", minimum=1)
+        rule = mailbox_store.update_rule(rule_id, profile.id, payload)
+        mailbox_store.record_audit_log(
+            mailbox_id=profile.id,
+            actor="admin",
+            action="rule_updated",
+            target_type="rule",
+            target_id=str(rule.id),
+            details={"name": rule.name},
+        )
+        return jsonify({"mailbox": _to_jsonable(profile), "rule": _to_jsonable(rule)})
+
+    @app.post("/api/mailbox/rules/delete")
+    @auth_required
+    def mailbox_rules_delete() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        rule_id = _parse_positive_int(payload.get("rule_id"), field_name="rule_id", minimum=1)
+        deleted = mailbox_store.delete_rule(rule_id, profile.id)
+        if not deleted:
+            raise MailboxError("规则不存在", code="rule_not_found", status_code=404)
+        mailbox_store.record_audit_log(
+            mailbox_id=profile.id,
+            actor="admin",
+            action="rule_deleted",
+            target_type="rule",
+            target_id=str(rule_id),
+            details={},
+        )
+        return jsonify({"deleted": True, "rule_id": rule_id})
+
+    @app.post("/api/mailbox/rules/apply")
+    @auth_required
+    def mailbox_rules_apply() -> Any:
+        payload = request.get_json(silent=True) or {}
+        profile = _resolve_mailbox(mailbox_store, payload)
+        method = _optional_text(payload.get("method"))
+        rules = (
+            [mailbox_store.get_rule(_parse_positive_int(payload.get("rule_id"), field_name="rule_id", minimum=1), profile.id)]
+            if payload.get("rule_id") is not None
+            else mailbox_store.list_rules(profile.id, enabled_only=True)
+        )
+        active_rules = [rule for rule in rules if rule]
+        candidates = mailbox_store.list_cached_messages(
+            profile.id,
+            method=_normalize_method(method) if method else None,
+            folder=_optional_text(payload.get("folder")),
+            include_snoozed=True,
+            limit=_parse_positive_int(payload.get("limit"), field_name="limit", default=200, minimum=1, maximum=1000),
+        )
+        applied = _apply_rules_to_messages(
+            mailbox_manager,
+            mailbox_store,
+            profile,
+            active_rules,
+            candidates,
+            method=_normalize_method(method) if method else None,
+        )
+        return jsonify({"mailbox": _to_jsonable(profile), "results": _to_jsonable(applied), "count": len(applied)})
+
+    @app.post("/api/audit/logs")
+    @auth_required
+    def audit_logs() -> Any:
+        payload = request.get_json(silent=True) or {}
+        page = _parse_positive_int(payload.get("page"), field_name="page", default=1, minimum=1)
+        page_size = _parse_positive_int(payload.get("page_size"), field_name="page_size", default=50, minimum=1, maximum=100)
+        mailbox_id = _parse_optional_single_mailbox_id(payload.get("mailbox_id"))
+        items, total = mailbox_store.list_audit_logs(
+            mailbox_id=mailbox_id,
+            action=_optional_text(payload.get("action")),
+            page=page,
+            page_size=page_size,
+        )
+        total_pages = (total + page_size - 1) // page_size if total else 0
+        return jsonify(
+            {
+                "items": _to_jsonable(items),
+                "meta": {
+                    "page": page,
+                    "page_size": page_size,
+                    "total": total,
+                    "total_pages": total_pages,
+                    "has_prev": page > 1,
+                    "has_next": page < total_pages,
+                },
+            }
+        )
+
+    @app.post("/api/mailbox/sync/run")
+    @auth_required
+    def mailbox_sync_run() -> Any:
+        payload = request.get_json(silent=True) or {}
+        requested_ids = _parse_optional_mailbox_ids(payload.get("mailbox_ids"))
+        single_id = _parse_optional_single_mailbox_id(payload.get("mailbox_id"))
+        if single_id is not None and single_id not in requested_ids:
+            requested_ids.append(single_id)
+        profiles = (
+            [_get_mailbox_or_404(mailbox_store, mailbox_id) for mailbox_id in requested_ids]
+            if requested_ids
+            else mailbox_store.list_mailboxes()
+        )
+        folder_limit = _parse_positive_int(payload.get("folder_limit"), field_name="folder_limit", default=5, minimum=1, maximum=20)
+        message_limit = _parse_positive_int(payload.get("message_limit"), field_name="message_limit", default=20, minimum=1, maximum=100)
+        include_body = _parse_bool(payload.get("include_body"), field_name="include_body", default=True)
+        apply_rules = _parse_bool(payload.get("apply_rules"), field_name="apply_rules", default=True)
+        results: list[dict[str, Any]] = []
+
+        for profile in profiles:
+            method = _normalize_method(payload.get("method") or profile.preferred_method)
+            config = _profile_to_config(profile, method=method)
+            scope = {"folder_limit": folder_limit, "message_limit": message_limit, "include_body": include_body}
+            job = mailbox_store.create_sync_job(mailbox_id=profile.id, method=method, requested_by="admin", scope=scope)
+            processed_messages = 0
+            cached_messages = 0
+            folders_synced = 0
+            error_message = ""
+            try:
+                folders = mailbox_manager.list_folders(config, method)
+                mailbox_store.cache_folders(profile.id, method, _to_jsonable(folders))
+                selected_folders = folders[:folder_limit]
+                for folder in selected_folders:
+                    folder_id = str(getattr(folder, "id", None) or folder.get("id", ""))
+                    query = MailboxQuery(
+                        method=method,
+                        folder=folder_id or "INBOX",
+                        top=message_limit,
+                        page=1,
+                        page_size=message_limit,
+                    )
+                    result = mailbox_manager.list_messages(config, query)
+                    messages = result.messages if hasattr(result, "messages") else result
+                    mailbox_store.cache_messages(profile.id, method, _to_jsonable(messages))
+                    processed_messages += len(messages)
+                    cached_messages += len(messages)
+                    folders_synced += 1
+                    last_message_at = ""
+                    if include_body:
+                        for item in messages:
+                            message_id = str(getattr(item, "message_id", None) or item.get("message_id", ""))
+                            if not message_id:
+                                continue
+                            detail = mailbox_manager.get_message_detail(
+                                config,
+                                MailboxDetailRequest(method=method, message_id=message_id, folder=query.folder),
+                            )
+                            mailbox_store.cache_message(profile.id, method, _to_jsonable(detail))
+                            last_message_at = getattr(detail, "received_at", None) or detail.get("received_at", last_message_at)
+                    mailbox_store.upsert_sync_state(
+                        mailbox_id=profile.id,
+                        method=method,
+                        folder_id=folder_id or "__mailbox__",
+                        cached_messages=len(messages),
+                        last_message_at=last_message_at,
+                        status="completed",
+                    )
+                mailbox_store.update_sync_job(
+                    job.id,
+                    status="completed",
+                    processed_messages=processed_messages,
+                    cached_messages=cached_messages,
+                    folders_synced=folders_synced,
+                )
+                if apply_rules:
+                    _apply_rules_to_messages(
+                        mailbox_manager,
+                        mailbox_store,
+                        profile,
+                        mailbox_store.list_rules(profile.id, enabled_only=True),
+                        mailbox_store.list_cached_messages(profile.id, method=method, limit=message_limit * folder_limit),
+                        method=method,
+                    )
+                results.append({"mailbox": _to_jsonable(profile), "job": _to_jsonable(mailbox_store.get_sync_job(job.id))})
+            except Exception as exc:  # noqa: BLE001
+                error_message = str(exc)
+                mailbox_store.update_sync_job(
+                    job.id,
+                    status="failed",
+                    processed_messages=processed_messages,
+                    cached_messages=cached_messages,
+                    folders_synced=folders_synced,
+                    error=error_message,
+                )
+                mailbox_store.record_audit_log(
+                    mailbox_id=profile.id,
+                    actor="admin",
+                    action="sync_failed",
+                    target_type="sync_job",
+                    target_id=str(job.id),
+                    status="failed",
+                    details={"error": error_message, "method": method},
+                )
+                raise
+
+        return jsonify({"results": _to_jsonable(results), "count": len(results)})
+
+    @app.post("/api/mailbox/sync/status")
+    @auth_required
+    def mailbox_sync_status() -> Any:
+        payload = request.get_json(silent=True) or {}
+        requested_ids = _parse_optional_mailbox_ids(payload.get("mailbox_ids"))
+        single_id = _parse_optional_single_mailbox_id(payload.get("mailbox_id"))
+        if single_id is not None and single_id not in requested_ids:
+            requested_ids.append(single_id)
+        profiles = (
+            [_get_mailbox_or_404(mailbox_store, mailbox_id) for mailbox_id in requested_ids]
+            if requested_ids
+            else mailbox_store.list_mailboxes()
+        )
+        items = [
+            {
+                "mailbox": _to_jsonable(profile),
+                "jobs": _to_jsonable(mailbox_store.list_sync_jobs(profile.id, limit=20)),
+                "states": _to_jsonable(mailbox_store.list_sync_states(profile.id, method=_optional_text(payload.get("method")))),
+            }
+            for profile in profiles
+        ]
+        return jsonify({"items": items, "count": len(items)})
 
     @app.errorhandler(MailboxError)
     def handle_mailbox_error(error: MailboxError) -> Any:
@@ -784,6 +1373,77 @@ def _parse_message_ids(raw: Any, *, maximum: int) -> list[str]:
         seen.add(normalized)
         message_ids.append(normalized)
     return message_ids
+
+
+def _parse_optional_mailbox_ids(raw: Any) -> list[int]:
+    if raw in (None, ""):
+        return []
+    return _parse_mailbox_ids(raw, maximum=500)
+
+
+def _parse_optional_single_mailbox_id(raw: Any) -> int | None:
+    if raw in (None, ""):
+        return None
+    return _parse_positive_int(raw, field_name="mailbox_id", default=1, minimum=1)
+
+
+def _optional_text_list(raw: Any, *, field_name: str) -> list[str] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise MailboxError(f"{field_name} 必须是字符串数组", code=f"invalid_{field_name}")
+    result: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise MailboxError(f"{field_name} 中的每一项都必须是非空字符串", code=f"invalid_{field_name}")
+        result.append(item.strip())
+    return result
+
+
+def _optional_object(raw: Any, *, field_name: str) -> dict[str, Any]:
+    if raw in (None, ""):
+        return {}
+    if not isinstance(raw, dict):
+        raise MailboxError(f"{field_name} 必须是对象", code=f"invalid_{field_name}")
+    return raw
+
+
+def _build_attachment_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": _require_text(raw, "name", "缺少附件名称"),
+        "content_type": _optional_text(raw.get("content_type")) or "application/octet-stream",
+        "content_base64": _require_text(raw, "content_base64", "缺少附件内容"),
+        "is_inline": _parse_bool(raw.get("is_inline"), field_name="is_inline", default=False),
+        "content_id": _optional_text(raw.get("content_id")) or "",
+    }
+
+
+def _build_compose_payload(raw: dict[str, Any], *, require_to: bool) -> dict[str, Any]:
+    payload = {
+        "draft_message_id": _optional_text(raw.get("draft_message_id")) or _optional_text(raw.get("message_id")),
+        "subject": _optional_text(raw.get("subject")) or "",
+        "body_text": _optional_text(raw.get("body_text")) or _optional_text(raw.get("body")) or "",
+        "body_html": _optional_text(raw.get("body_html")),
+        "to_recipients": _optional_text_list(raw.get("to_recipients") or raw.get("to"), field_name="to_recipients") or [],
+        "cc_recipients": _optional_text_list(raw.get("cc_recipients") or raw.get("cc"), field_name="cc_recipients") or [],
+        "bcc_recipients": _optional_text_list(raw.get("bcc_recipients") or raw.get("bcc"), field_name="bcc_recipients") or [],
+        "send_now": _parse_bool(raw.get("send_now"), field_name="send_now", default=True),
+    }
+    attachments = raw.get("attachments")
+    if attachments is None:
+        payload["attachments"] = []
+    elif not isinstance(attachments, list):
+        raise MailboxError("attachments 必须是数组", code="invalid_attachments")
+    else:
+        payload["attachments"] = []
+        for item in attachments:
+            if not isinstance(item, dict):
+                raise MailboxError("attachments 中的每一项都必须是对象", code="invalid_attachments")
+            payload["attachments"].append(_build_attachment_payload(item))
+
+    if require_to and not payload["draft_message_id"] and payload["send_now"] and not payload["to_recipients"]:
+        raise MailboxError("至少需要一个收件人", code="invalid_recipients")
+    return payload
 
 
 def _build_query(raw: dict[str, Any], *, default_method: str) -> MailboxQuery:
@@ -1449,6 +2109,176 @@ def _optional_text(value: Any) -> str | None:
         raise MailboxError("请求参数类型错误", code="invalid_payload")
     cleaned = value.strip()
     return cleaned or None
+
+
+def _message_value(message: Any, key: str, default: Any = None) -> Any:
+    if isinstance(message, dict):
+        return message.get(key, default)
+    return getattr(message, key, default)
+
+
+def _rule_matches_message(message: Any, conditions: dict[str, Any]) -> bool:
+    sender_contains = _optional_text(conditions.get("sender_contains")) if isinstance(conditions.get("sender_contains"), str) else None
+    subject_contains = _optional_text(conditions.get("subject_contains")) if isinstance(conditions.get("subject_contains"), str) else None
+    folder = _optional_text(conditions.get("folder")) if isinstance(conditions.get("folder"), str) else None
+    importance = _optional_text(conditions.get("importance")) if isinstance(conditions.get("importance"), str) else None
+    keyword = _optional_text(conditions.get("keyword")) if isinstance(conditions.get("keyword"), str) else None
+    required_tag = _optional_text(conditions.get("tag")) if isinstance(conditions.get("tag"), str) else None
+
+    sender_text = f"{_message_value(message, 'sender', '')} {_message_value(message, 'sender_name', '')}".casefold()
+    subject_text = str(_message_value(message, "subject", "") or "").casefold()
+    preview_text = str(_message_value(message, "preview", "") or "").casefold()
+
+    if sender_contains and sender_contains.casefold() not in sender_text:
+        return False
+    if subject_contains and subject_contains.casefold() not in subject_text:
+        return False
+    if folder and folder.casefold() != str(_message_value(message, "folder", "") or "").casefold():
+        return False
+    if importance and importance.casefold() != str(_message_value(message, "importance", "") or "").casefold():
+        return False
+    if keyword and keyword.casefold() not in f"{subject_text} {sender_text} {preview_text}":
+        return False
+    if conditions.get("has_attachments") is True and not bool(_message_value(message, "has_attachments", False)):
+        return False
+    if conditions.get("is_unread") is True and bool(_message_value(message, "is_read", False)):
+        return False
+    if conditions.get("is_flagged") is True and not bool(_message_value(message, "is_flagged", False)):
+        return False
+    if required_tag:
+        meta = _message_value(message, "meta")
+        tags = list(getattr(meta, "tags", [])) if meta else []
+        if required_tag not in tags:
+            return False
+    return True
+
+
+def _apply_rule_actions_to_message(
+    manager: MailboxManager,
+    store: MailboxStore,
+    profile: MailboxProfile,
+    message: Any,
+    actions: dict[str, Any],
+    *,
+    method: str | None = None,
+) -> None:
+    resolved_method = method or str(_message_value(message, "method", profile.preferred_method))
+    message_id = str(_message_value(message, "message_id", "") or "")
+    folder = str(_message_value(message, "folder", "") or "INBOX")
+    config = _profile_to_config(profile, method=resolved_method)
+
+    if actions.get("mark_read") is True:
+        manager.update_read_state(
+            config,
+            ReadStateUpdateRequest(method=resolved_method, message_id=message_id, is_read=True, folder=folder),
+        )
+        store.update_cached_message_state(profile.id, resolved_method, message_id, is_read=True)
+
+    if "flag" in actions:
+        is_flagged = bool(actions.get("flag"))
+        manager.update_flag_state(
+            config,
+            FlagStateUpdateRequest(method=resolved_method, message_id=message_id, is_flagged=is_flagged, folder=folder),
+        )
+        store.update_cached_message_state(profile.id, resolved_method, message_id, is_flagged=is_flagged)
+
+    move_to_folder = _optional_text(actions.get("move_to_folder")) if isinstance(actions.get("move_to_folder"), str) else None
+    if move_to_folder:
+        manager.move_message(
+            config,
+            MessageMoveRequest(
+                method=resolved_method,
+                message_id=message_id,
+                destination_folder=move_to_folder,
+                folder=folder,
+            ),
+        )
+        store.update_cached_message_state(profile.id, resolved_method, message_id, folder_id=move_to_folder)
+
+    existing_meta = store.get_message_meta(profile.id, resolved_method, message_id)
+    next_tags = list(existing_meta.tags) if existing_meta else []
+    tags_value = actions.get("tags")
+    if isinstance(tags_value, str) and tags_value.strip():
+        if tags_value.strip() not in next_tags:
+            next_tags.append(tags_value.strip())
+    elif isinstance(tags_value, list):
+        for item in tags_value:
+            if isinstance(item, str) and item.strip() and item.strip() not in next_tags:
+                next_tags.append(item.strip())
+
+    notes_append = _optional_text(actions.get("notes_append")) if isinstance(actions.get("notes_append"), str) else None
+    next_notes = (existing_meta.notes if existing_meta else "") if existing_meta else ""
+    if notes_append:
+        next_notes = f"{next_notes}\n{notes_append}".strip() if next_notes else notes_append
+
+    follow_up = _optional_text(actions.get("follow_up")) if isinstance(actions.get("follow_up"), str) else None
+    snoozed_until = _optional_text(actions.get("snoozed_until")) if isinstance(actions.get("snoozed_until"), str) else None
+    status = _optional_text(actions.get("status")) if isinstance(actions.get("status"), str) else None
+
+    if next_tags or notes_append or follow_up is not None or snoozed_until is not None or status is not None:
+        store.update_message_meta(
+            profile.id,
+            resolved_method,
+            message_id,
+            tags=next_tags if next_tags else None,
+            follow_up=follow_up,
+            notes=next_notes if (notes_append or existing_meta) else None,
+            snoozed_until=snoozed_until,
+            status=status,
+        )
+
+
+def _apply_rules_to_messages(
+    manager: MailboxManager,
+    store: MailboxStore,
+    profile: MailboxProfile,
+    rules: list[Any],
+    messages: list[Any],
+    *,
+    method: str | None = None,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for rule in rules:
+        if not rule:
+            continue
+        matched = 0
+        applied = 0
+        failed = 0
+        for message in messages:
+            if not _rule_matches_message(message, getattr(rule, "conditions", {})):
+                continue
+            matched += 1
+            try:
+                _apply_rule_actions_to_message(
+                    manager,
+                    store,
+                    profile,
+                    message,
+                    getattr(rule, "actions", {}),
+                    method=method,
+                )
+                applied += 1
+            except Exception:  # noqa: BLE001
+                failed += 1
+        store.record_audit_log(
+            mailbox_id=profile.id,
+            actor="admin",
+            action="rule_applied",
+            target_type="rule",
+            target_id=str(getattr(rule, "id", "")),
+            status="success" if failed == 0 else "partial",
+            details={"matched": matched, "applied": applied, "failed": failed},
+        )
+        results.append(
+            {
+                "rule_id": getattr(rule, "id", None),
+                "name": getattr(rule, "name", ""),
+                "matched": matched,
+                "applied": applied,
+                "failed": failed,
+            }
+        )
+    return results
 
 
 def _extract_access_key_from_request() -> str | None:
