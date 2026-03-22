@@ -12,7 +12,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Callable
 
-from flask import Flask, jsonify, render_template, request, session
+from flask import Flask, jsonify, render_template, request, send_from_directory, session
 
 from services.outlook_manager import (
     FlagStateUpdateRequest,
@@ -45,6 +45,8 @@ def create_app(
     app = Flask(__name__)
     app.config["JSON_AS_ASCII"] = False
     app.config["SECRET_KEY"] = os.getenv("MAIL_ADMIN_SECRET_KEY", "change-me-before-production")
+    frontend_dist_dir = Path(app.static_folder or "static") / "frontend"
+    frontend_index_file = frontend_dist_dir / "index.html"
 
     mailbox_manager = manager or MailboxManager()
     mailbox_store = store or MailboxStore(database_path or os.getenv("MAILBOX_DB_PATH", "data/mailboxes.db"))
@@ -76,11 +78,20 @@ def create_app(
 
     @app.get("/")
     def index() -> str:
-        return render_template("index.html")
+        return _serve_frontend_index(frontend_index_file, frontend_dist_dir)
 
     @app.get("/favicon.ico")
     def favicon() -> tuple[str, int]:
         return "", 204
+
+    @app.get("/<path:path>")
+    def frontend_routes(path: str) -> Any:
+        normalized_path = path.strip()
+        if normalized_path.startswith("api/") or normalized_path == "api":
+            raise MailboxError("接口不存在", code="not_found", status_code=404)
+        if normalized_path.startswith("static/"):
+            raise MailboxError("静态资源不存在", code="not_found", status_code=404)
+        return _serve_frontend_index(frontend_index_file, frontend_dist_dir)
 
     @app.get("/api/health")
     def health() -> Any:
@@ -2308,6 +2319,34 @@ def _probe_mailbox_connection(
     if not latest_subject and isinstance(latest_message, dict):
         latest_subject = str(latest_message.get("subject", ""))
     return "连接成功，收件箱暂无邮件" if not latest_subject else f"连接成功，最近邮件：{latest_subject}"
+
+
+def _serve_frontend_index(frontend_index_file: Path, frontend_dist_dir: Path) -> Any:
+    if frontend_index_file.exists():
+        return send_from_directory(frontend_dist_dir, "index.html")
+    return (
+        """
+        <!doctype html>
+        <html lang="zh-CN">
+          <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+            <title>Email Outlook</title>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 40px; color: #0f172a; }
+              code { background: #f1f5f9; padding: 2px 6px; border-radius: 6px; }
+            </style>
+          </head>
+          <body>
+            <h1>前端尚未构建</h1>
+            <p>请在 <code>templates</code> 目录执行 <code>npm install</code> 与 <code>npm run build</code>。</p>
+            <p>开发模式可执行 <code>npm run dev</code>，并通过 Vite 本地地址访问。</p>
+          </body>
+        </html>
+        """,
+        503,
+        {"Content-Type": "text/html; charset=utf-8"},
+    )
 
 
 def _label_for_method(method: str) -> str:
