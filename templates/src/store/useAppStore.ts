@@ -99,12 +99,14 @@ interface AuthState {
 
 interface WorkspaceState {
   accounts: EmailAccount[];
+  activeMailboxId: string | null;
   folders: Folder[];
   emails: Email[];
   activeFolderId: string | null;
   activeEmailId: string | null;
   selectedEmailIds: string[];
   setAccounts: (accounts: EmailAccount[]) => void;
+  setActiveMailboxId: (mailboxId: string | null) => void;
   setFolders: (folders: Folder[]) => void;
   setEmails: (emails: Email[]) => void;
   setActiveFolderId: (folderId: string | null) => void;
@@ -140,6 +142,7 @@ export const useAppStore = create<AppState>((set) => ({
   authReady: false,
   username: null,
   accounts: [],
+  activeMailboxId: null,
   folders: [],
   emails: [],
   activeFolderId: null,
@@ -166,6 +169,10 @@ export const useAppStore = create<AppState>((set) => ({
   setAccounts: (accounts) =>
     set({
       accounts,
+    }),
+  setActiveMailboxId: (activeMailboxId) =>
+    set({
+      activeMailboxId,
     }),
   setFolders: (folders) =>
     set((state) => {

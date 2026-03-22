@@ -65,7 +65,7 @@ import {
   updateRule,
 } from '../lib/api';
 import { emptyMeta, fileToAttachmentPayload, fromDatetimeLocalValue, methodLabel, toDatetimeLocalValue } from '../lib/mail';
-import type { Email, EmailAccount, Folder, MessageMeta, MethodValue } from '../store/useAppStore';
+import { useAppStore, type Email, type EmailAccount, type Folder, type MessageMeta, type MethodValue } from '../store/useAppStore';
 
 const ITEMS_PER_PAGE = 20;
 const EMPTY_PAGINATION: PaginationMeta = {
@@ -214,6 +214,8 @@ function isDraftFolder(email: Email | null, folderId: string) {
 
 export default function Workspace() {
   const { t } = useI18n();
+  const syncAccounts = useAppStore((state) => state.setAccounts);
+  const syncActiveMailboxId = useAppStore((state) => state.setActiveMailboxId);
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
   const [activeMailboxId, setActiveMailboxId] = useState('');
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -265,6 +267,14 @@ export default function Workspace() {
   const activeFolder = useMemo(() => folders.find((folder) => folder.id === activeFolderId) ?? null, [folders, activeFolderId]);
   const allVisibleSelected = messages.length > 0 && messages.every((message) => selectedMessageIds.includes(message.id));
   const syncStatus = syncItems[0] ?? null;
+
+  useEffect(() => {
+    syncAccounts(accounts);
+  }, [accounts, syncAccounts]);
+
+  useEffect(() => {
+    syncActiveMailboxId(activeMailboxId || null);
+  }, [activeMailboxId, syncActiveMailboxId]);
 
   async function loadAccounts() {
     setLoadingAccounts(true);
