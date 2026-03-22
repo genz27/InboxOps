@@ -246,6 +246,7 @@ export default function Workspace() {
   const [busyAction, setBusyAction] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [foldersCollapsed, setFoldersCollapsed] = useState(false);
   const [compose, setCompose] = useState<ComposeFormState>(EMPTY_COMPOSE);
   const [metaForm, setMetaForm] = useState<MetaFormState>(EMPTY_META_FORM);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -1040,9 +1041,23 @@ export default function Workspace() {
           </div>
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">{t('folders')}</h2>
+        <div className={cn('flex min-h-0 flex-col overflow-hidden p-4', foldersCollapsed ? 'shrink-0' : 'flex-1')}>
+          <div className={cn('flex items-center justify-between gap-2', foldersCollapsed ? 'mb-0' : 'mb-3')}>
+            <button
+              type="button"
+              className="flex min-w-0 items-center gap-2 rounded-md text-left transition-colors hover:text-slate-900 dark:hover:text-slate-50"
+              onClick={() => setFoldersCollapsed((current) => !current)}
+              aria-expanded={!foldersCollapsed}
+              aria-controls="workspace-folders-panel"
+            >
+              <ChevronRight
+                className={cn(
+                  'h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200',
+                  !foldersCollapsed && 'rotate-90',
+                )}
+              />
+              <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">{t('folders')}</h2>
+            </button>
             <div className="flex items-center gap-1">
               <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => void handleFolderAction('create')}>
                 <FolderPlus className="h-4 w-4" />
@@ -1068,33 +1083,43 @@ export default function Workspace() {
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
-            {loadingFolders ? (
-              <div className="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-slate-500">
-                <LoaderCircle className="h-4 w-4 animate-spin" />
-                {t('loading')}
-              </div>
-            ) : (
-              folders.map((folder) => (
-                <button
-                  key={folder.id}
-                  onClick={() => {
-                    setActiveFolderId(folder.id);
-                    setPage(1);
-                    setSelectedMessageIds([]);
-                  }}
-                  className={cn(
-                    'flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-sm transition-colors',
-                    activeFolderId === folder.id
-                      ? 'bg-slate-200 font-medium text-slate-900 dark:bg-slate-800 dark:text-slate-50'
-                      : 'text-slate-600 hover:bg-slate-200/70 dark:text-slate-300 dark:hover:bg-slate-800/70',
-                  )}
-                >
-                  <span className="truncate">{folder.displayName}</span>
-                  {folder.unreadCount > 0 ? <Badge variant="secondary">{folder.unreadCount}</Badge> : null}
-                </button>
-              ))
+          <div
+            id="workspace-folders-panel"
+            className={cn(
+              'grid transition-[grid-template-rows,opacity] duration-200 ease-out',
+              foldersCollapsed ? 'grid-rows-[0fr] opacity-0' : 'min-h-0 flex-1 grid-rows-[1fr] opacity-100',
             )}
+          >
+            <div className="min-h-0 overflow-hidden">
+              <div className="min-h-0 h-full space-y-1 overflow-y-auto pr-1">
+                {loadingFolders ? (
+                  <div className="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-slate-500">
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                    {t('loading')}
+                  </div>
+                ) : (
+                  folders.map((folder) => (
+                    <button
+                      key={folder.id}
+                      onClick={() => {
+                        setActiveFolderId(folder.id);
+                        setPage(1);
+                        setSelectedMessageIds([]);
+                      }}
+                      className={cn(
+                        'flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-sm transition-colors',
+                        activeFolderId === folder.id
+                          ? 'bg-slate-200 font-medium text-slate-900 dark:bg-slate-800 dark:text-slate-50'
+                          : 'text-slate-600 hover:bg-slate-200/70 dark:text-slate-300 dark:hover:bg-slate-800/70',
+                      )}
+                    >
+                      <span className="truncate">{folder.displayName}</span>
+                      {folder.unreadCount > 0 ? <Badge variant="secondary">{folder.unreadCount}</Badge> : null}
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
           </div>
         </div>
       </div>
