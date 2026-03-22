@@ -68,6 +68,7 @@ import { emptyMeta, fileToAttachmentPayload, fromDatetimeLocalValue, methodLabel
 import { useAppStore, type Email, type EmailAccount, type Folder, type MessageMeta, type MethodValue } from '../store/useAppStore';
 
 const ITEMS_PER_PAGE = 20;
+const MAIL_LIST_AUTO_REFRESH_MS = 30000;
 const EMPTY_PAGINATION: PaginationMeta = {
   page: 1,
   page_size: ITEMS_PER_PAGE,
@@ -246,7 +247,10 @@ export default function Workspace() {
   const [busyAction, setBusyAction] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [foldersCollapsed, setFoldersCollapsed] = useState(false);
+  const [foldersCollapsed, setFoldersCollapsed] = useState(true);
+  const [detailSidebarCollapsed, setDetailSidebarCollapsed] = useState(true);
+  const [metaPanelCollapsed, setMetaPanelCollapsed] = useState(false);
+  const [threadPanelCollapsed, setThreadPanelCollapsed] = useState(false);
   const [compose, setCompose] = useState<ComposeFormState>(EMPTY_COMPOSE);
   const [metaForm, setMetaForm] = useState<MetaFormState>(EMPTY_META_FORM);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -446,6 +450,23 @@ export default function Workspace() {
       return;
     }
     void loadMessagesForFolder(page);
+  }, [activeMailbox?.id, activeMethod, activeFolderId, page, deferredSearchQuery, filterUnread, filterStarred, filterAttachment, sortOrder]);
+
+  useEffect(() => {
+    if (!activeMailbox || !activeFolderId) {
+      return;
+    }
+
+    const timerId = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') {
+        return;
+      }
+      void loadMessagesForFolder(page);
+    }, MAIL_LIST_AUTO_REFRESH_MS);
+
+    return () => {
+      window.clearInterval(timerId);
+    };
   }, [activeMailbox?.id, activeMethod, activeFolderId, page, deferredSearchQuery, filterUnread, filterStarred, filterAttachment, sortOrder]);
 
   useEffect(() => {
@@ -1383,7 +1404,7 @@ export default function Workspace() {
                 </div>
               </div>
 
-              <div className="mb-6 grid gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]">
+              <div className={cn('mb-6 grid gap-4', !detailSidebarCollapsed && 'xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]')}>
                 <div className="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
                   <div className="mb-3 flex items-center justify-between">
                     <h3 className="text-sm font-semibold">消息视图</h3>
@@ -1396,6 +1417,15 @@ export default function Workspace() {
                       </Button>
                       <Button variant={viewMode === 'headers' ? 'secondary' : 'ghost'} size="sm" onClick={() => setViewMode('headers')}>
                         {t('headersView')}
+                      </Button>
+                      <Button
+                        variant={detailSidebarCollapsed ? 'ghost' : 'secondary'}
+                        size="sm"
+                        onClick={() => setDetailSidebarCollapsed((current) => !current)}
+                        title={detailSidebarCollapsed ? '展开侧边信息' : '收起侧边信息'}
+                      >
+                        {detailSidebarCollapsed ? <ChevronLeft className="mr-2 h-4 w-4" /> : <ChevronRight className="mr-2 h-4 w-4" />}
+                        侧边信息
                       </Button>
                     </div>
                   </div>
@@ -1448,82 +1478,134 @@ export default function Workspace() {
                   ) : null}
                 </div>
 
+                {!detailSidebarCollapsed ? (
                 <div className="space-y-4">
                   <div className="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="text-sm font-semibold">标签 / 跟进 / 备注 / Snooze</h3>
+                    <div className={cn('flex items-center justify-between gap-2', metaPanelCollapsed ? 'mb-0' : 'mb-3')}>
+                      <button
+                        type="button"
+                        className="flex min-w-0 items-center gap-2 rounded-md text-left transition-colors hover:text-slate-900 dark:hover:text-slate-50"
+                        onClick={() => setMetaPanelCollapsed((current) => !current)}
+                        aria-expanded={!metaPanelCollapsed}
+                        aria-controls="workspace-meta-panel"
+                      >
+                        <ChevronRight
+                          className={cn(
+                            'h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200',
+                            !metaPanelCollapsed && 'rotate-90',
+                          )}
+                        />
+                        <h3 className="text-sm font-semibold">标签 / 跟进 / 备注 / Snooze</h3>
+                      </button>
                       <Badge variant="outline">{activeMessage.meta.status || 'active'}</Badge>
                     </div>
-                    <div className="grid gap-3">
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-slate-500">标签</label>
-                        <Input value={metaForm.tags} onChange={(event) => setMetaForm((current) => ({ ...current, tags: event.target.value }))} placeholder="vip, follow-up" />
+                    <div
+                      id="workspace-meta-panel"
+                      className={cn(
+                        'grid transition-[grid-template-rows,opacity] duration-200 ease-out',
+                        metaPanelCollapsed ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100',
+                      )}
+                    >
+                      <div className="min-h-0 overflow-hidden">
+                        <div className="grid gap-3 pt-1">
+                          <div>
+                            <label className="mb-1 block text-xs font-medium text-slate-500">标签</label>
+                            <Input value={metaForm.tags} onChange={(event) => setMetaForm((current) => ({ ...current, tags: event.target.value }))} placeholder="vip, follow-up" />
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-xs font-medium text-slate-500">跟进</label>
+                            <Input value={metaForm.followUp} onChange={(event) => setMetaForm((current) => ({ ...current, followUp: event.target.value }))} placeholder="today / tomorrow / custom" />
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-xs font-medium text-slate-500">稍后提醒</label>
+                            <Input type="datetime-local" value={metaForm.snoozedUntil} onChange={(event) => setMetaForm((current) => ({ ...current, snoozedUntil: event.target.value }))} />
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-xs font-medium text-slate-500">状态</label>
+                            <select
+                              className="flex h-9 w-full rounded-md border border-slate-200 bg-transparent px-3 text-sm dark:border-slate-800"
+                              value={metaForm.status}
+                              onChange={(event) => setMetaForm((current) => ({ ...current, status: event.target.value }))}
+                            >
+                              <option value="active">active</option>
+                              <option value="snoozed">snoozed</option>
+                              <option value="done">done</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-xs font-medium text-slate-500">备注</label>
+                            <textarea
+                              className="min-h-28 w-full rounded-md border border-slate-200 bg-transparent px-3 py-2 text-sm shadow-sm dark:border-slate-800"
+                              value={metaForm.notes}
+                              onChange={(event) => setMetaForm((current) => ({ ...current, notes: event.target.value }))}
+                            />
+                          </div>
+                          <Button onClick={() => void handleSaveMeta()} disabled={busyAction === 'meta'}>
+                            {busyAction === 'meta' ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
+                            保存 Meta
+                          </Button>
+                        </div>
                       </div>
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-slate-500">跟进</label>
-                        <Input value={metaForm.followUp} onChange={(event) => setMetaForm((current) => ({ ...current, followUp: event.target.value }))} placeholder="today / tomorrow / custom" />
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-slate-500">稍后提醒</label>
-                        <Input type="datetime-local" value={metaForm.snoozedUntil} onChange={(event) => setMetaForm((current) => ({ ...current, snoozedUntil: event.target.value }))} />
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-slate-500">状态</label>
-                        <select
-                          className="flex h-9 w-full rounded-md border border-slate-200 bg-transparent px-3 text-sm dark:border-slate-800"
-                          value={metaForm.status}
-                          onChange={(event) => setMetaForm((current) => ({ ...current, status: event.target.value }))}
-                        >
-                          <option value="active">active</option>
-                          <option value="snoozed">snoozed</option>
-                          <option value="done">done</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-slate-500">备注</label>
-                        <textarea
-                          className="min-h-28 w-full rounded-md border border-slate-200 bg-transparent px-3 py-2 text-sm shadow-sm dark:border-slate-800"
-                          value={metaForm.notes}
-                          onChange={(event) => setMetaForm((current) => ({ ...current, notes: event.target.value }))}
-                        />
-                      </div>
-                      <Button onClick={() => void handleSaveMeta()} disabled={busyAction === 'meta'}>
-                        {busyAction === 'meta' ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
-                        保存 Meta
-                      </Button>
                     </div>
                   </div>
 
                   <div className="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="text-sm font-semibold">线程聚合视图</h3>
+                    <div className={cn('flex items-center justify-between gap-2', threadPanelCollapsed ? 'mb-0' : 'mb-3')}>
+                      <button
+                        type="button"
+                        className="flex min-w-0 items-center gap-2 rounded-md text-left transition-colors hover:text-slate-900 dark:hover:text-slate-50"
+                        onClick={() => setThreadPanelCollapsed((current) => !current)}
+                        aria-expanded={!threadPanelCollapsed}
+                        aria-controls="workspace-thread-panel"
+                      >
+                        <ChevronRight
+                          className={cn(
+                            'h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200',
+                            !threadPanelCollapsed && 'rotate-90',
+                          )}
+                        />
+                        <h3 className="text-sm font-semibold">线程聚合视图</h3>
+                      </button>
                       <Badge variant="outline">{threadItems.length}</Badge>
                     </div>
-                    {threadItems.length === 0 ? (
-                      <div className="text-sm text-slate-500">当前会话没有已缓存的线程邮件</div>
-                    ) : (
-                      <div className="space-y-2">
-                        {threadItems.map((item) => (
-                          <button
-                            key={item.id}
-                            onClick={() => void loadMessageDetail(item.id, item.folderId)}
-                            className={cn(
-                              'w-full rounded-lg border px-3 py-2 text-left transition-colors',
-                              item.id === activeMessage.id
-                                ? 'border-slate-900 bg-slate-50 dark:border-slate-200 dark:bg-slate-900'
-                                : 'border-slate-200 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-900/60',
-                            )}
-                          >
-                            <div className="truncate text-sm font-medium">{item.subject}</div>
-                            <div className="mt-1 text-xs text-slate-500">
-                              {item.sender} · {item.date ? format(new Date(item.date), 'MM-dd HH:mm') : '-'}
+                    <div
+                      id="workspace-thread-panel"
+                      className={cn(
+                        'grid transition-[grid-template-rows,opacity] duration-200 ease-out',
+                        threadPanelCollapsed ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100',
+                      )}
+                    >
+                      <div className="min-h-0 overflow-hidden">
+                        <div className="pt-1">
+                          {threadItems.length === 0 ? (
+                            <div className="text-sm text-slate-500">当前会话没有已缓存的线程邮件</div>
+                          ) : (
+                            <div className="space-y-2">
+                              {threadItems.map((item) => (
+                                <button
+                                  key={item.id}
+                                  onClick={() => void loadMessageDetail(item.id, item.folderId)}
+                                  className={cn(
+                                    'w-full rounded-lg border px-3 py-2 text-left transition-colors',
+                                    item.id === activeMessage.id
+                                      ? 'border-slate-900 bg-slate-50 dark:border-slate-200 dark:bg-slate-900'
+                                      : 'border-slate-200 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-900/60',
+                                  )}
+                                >
+                                  <div className="truncate text-sm font-medium">{item.subject}</div>
+                                  <div className="mt-1 text-xs text-slate-500">
+                                    {item.sender} · {item.date ? format(new Date(item.date), 'MM-dd HH:mm') : '-'}
+                                  </div>
+                                </button>
+                              ))}
                             </div>
-                          </button>
-                        ))}
+                          )}
+                        </div>
                       </div>
-                    )}
+                    </div>
                   </div>
                 </div>
+                ) : null}
               </div>
 
               <div className="rounded-xl border border-slate-200 p-4 text-xs text-slate-500 dark:border-slate-800">

@@ -45,7 +45,7 @@ function applyTheme(theme: Theme) {
 export const useTheme = create<ThemeState>()(
   persist(
     (set) => ({
-      theme: 'system',
+      theme: 'light',
       setTheme: (theme) => {
         set({ theme });
         applyTheme(theme);
@@ -53,6 +53,13 @@ export const useTheme = create<ThemeState>()(
     }),
     {
       name: THEME_STORAGE_KEY,
+      version: 2,
+      migrate: (persistedState) => {
+        const state = persistedState as Partial<ThemeState> | undefined;
+        return {
+          theme: state?.theme === 'dark' ? 'dark' : 'light',
+        };
+      },
       onRehydrateStorage: () => (state) => {
         if (state) {
           applyTheme(state.theme);
