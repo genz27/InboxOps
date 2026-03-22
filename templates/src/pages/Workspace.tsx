@@ -327,12 +327,15 @@ export default function Workspace() {
     }
   }
 
-  async function loadMessagesForFolder(nextPage = page) {
+  async function loadMessagesForFolder(nextPage = page, options?: { silent?: boolean }) {
     if (!activeMailbox || !activeFolderId) {
       return;
     }
-    setLoadingMessages(true);
-    setError('');
+    const silent = options?.silent === true;
+    if (!silent) {
+      setLoadingMessages(true);
+      setError('');
+    }
     try {
       const response = await listMessages({
         mailboxId: activeMailbox.id,
@@ -355,11 +358,15 @@ export default function Workspace() {
         setThreadItems([]);
       }
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : '加载邮件失败');
-      setMessages([]);
-      setListMeta(EMPTY_PAGINATION);
+      if (!silent) {
+        setError(requestError instanceof Error ? requestError.message : '加载邮件失败');
+        setMessages([]);
+        setListMeta(EMPTY_PAGINATION);
+      }
     } finally {
-      setLoadingMessages(false);
+      if (!silent) {
+        setLoadingMessages(false);
+      }
     }
   }
 
@@ -458,16 +465,29 @@ export default function Workspace() {
     }
 
     const timerId = window.setInterval(() => {
-      if (document.visibilityState === 'hidden') {
+      if (document.visibilityState === 'hidden' || loadingMessages || loadingDetail || busyAction !== '') {
         return;
       }
-      void loadMessagesForFolder(page);
+      void loadMessagesForFolder(page, { silent: true });
     }, MAIL_LIST_AUTO_REFRESH_MS);
 
     return () => {
       window.clearInterval(timerId);
     };
-  }, [activeMailbox?.id, activeMethod, activeFolderId, page, deferredSearchQuery, filterUnread, filterStarred, filterAttachment, sortOrder]);
+  }, [
+    activeMailbox?.id,
+    activeMethod,
+    activeFolderId,
+    page,
+    deferredSearchQuery,
+    filterUnread,
+    filterStarred,
+    filterAttachment,
+    sortOrder,
+    loadingMessages,
+    loadingDetail,
+    busyAction,
+  ]);
 
   useEffect(() => {
     void loadThreadForMessage(activeMessage);
@@ -1006,7 +1026,14 @@ export default function Workspace() {
   return (
     <div className="flex h-full w-full overflow-hidden bg-white dark:bg-slate-950">
       <div className="hidden w-72 shrink-0 overflow-hidden border-r border-slate-200 bg-slate-50/80 dark:border-slate-800 dark:bg-slate-900/50 lg:flex lg:flex-col">
-        <div className="flex max-h-[45%] min-h-[11rem] shrink-0 flex-col overflow-hidden border-b border-slate-200 p-4 dark:border-slate-800">
+        <div
+          className={cn(
+            'flex flex-col overflow-hidden p-4',
+            foldersCollapsed
+              ? 'min-h-0 flex-1'
+              : 'max-h-[45%] min-h-[11rem] shrink-0 border-b border-slate-200 dark:border-slate-800',
+          )}
+        >
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">邮箱档案</h2>
             <Badge variant="outline">{accounts.length}</Badge>
@@ -1062,7 +1089,12 @@ export default function Workspace() {
           </div>
         </div>
 
-        <div className={cn('flex min-h-0 flex-col overflow-hidden p-4', foldersCollapsed ? 'shrink-0' : 'flex-1')}>
+        <div
+          className={cn(
+            'flex min-h-0 flex-col overflow-hidden p-4',
+            foldersCollapsed ? 'shrink-0 border-t border-slate-200 dark:border-slate-800' : 'flex-1',
+          )}
+        >
           <div className={cn('flex items-center justify-between gap-2', foldersCollapsed ? 'mb-0' : 'mb-3')}>
             <button
               type="button"
