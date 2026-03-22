@@ -476,7 +476,7 @@ export async function logout(): Promise<void> {
 export async function listMailboxes(params?: { q?: string; page?: number; page_size?: number }): Promise<EmailAccount[]> {
   const query = new URLSearchParams();
   query.set('page', String(params?.page ?? 1));
-  query.set('page_size', String(params?.page_size ?? 200));
+  query.set('page_size', String(params?.page_size ?? 100));
   if (params?.q) {
     query.set('q', params.q);
   }
