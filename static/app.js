@@ -114,6 +114,7 @@ const elements = {
     batchMoveButton: document.getElementById("batchMoveButton"),
     batchArchiveButton: document.getElementById("batchArchiveButton"),
     batchDeleteButton: document.getElementById("batchDeleteButton"),
+    messageBatchPanel: document.getElementById("messageBatchPanel"),
     messageList: document.getElementById("messageList"),
     messageItemTemplate: document.getElementById("messageItemTemplate"),
     messageCount: document.getElementById("messageCount"),
@@ -1565,6 +1566,9 @@ function syncFolderSelectOptions() {
 
 function renderMessageBatchActions() {
     const selectedCount = state.selectedMessageIds.size;
+    if (elements.messageBatchPanel) {
+        elements.messageBatchPanel.hidden = selectedCount === 0;
+    }
     setElementText(elements.selectedMessageCount, `已选 ${selectedCount} 封邮件`);
     [
         elements.clearSelectedMessagesButton,
