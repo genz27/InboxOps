@@ -40,6 +40,11 @@ interface AccountFormState {
   notes: string;
 }
 
+interface ImportFormState {
+  rawText: string;
+  preferredMethod: MethodValue;
+}
+
 const DEFAULT_FORM: AccountFormState = {
   mode: 'create',
   id: '',
@@ -52,11 +57,24 @@ const DEFAULT_FORM: AccountFormState = {
   notes: '',
 };
 
+const DEFAULT_IMPORT_FORM: ImportFormState = {
+  rawText: '',
+  preferredMethod: 'graph_api',
+};
+
 const METHOD_OPTIONS: Array<{ value: MethodValue; label: string }> = [
   { value: 'graph_api', label: 'Graph API' },
   { value: 'imap_new', label: '新版 IMAP' },
   { value: 'imap_old', label: '旧版 IMAP' },
 ];
+
+function mergeAccountStatuses(nextAccounts: EmailAccount[], currentAccounts: EmailAccount[]): EmailAccount[] {
+  const statusMap = new Map(currentAccounts.map((account) => [account.id, account.status]));
+  return nextAccounts.map((account) => ({
+    ...account,
+    status: statusMap.get(account.id) ?? account.status,
+  }));
+}
 
 export default function Accounts() {
   const { t } = useI18n();
@@ -64,9 +82,13 @@ export default function Accounts() {
   const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [editingAccount, setEditingAccount] = useState<AccountFormState | null>(null);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importForm, setImportForm] = useState<ImportFormState>(DEFAULT_IMPORT_FORM);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [error, setError] = useState('');
+  const [importError, setImportError] = useState('');
 
   const filteredAccounts = useMemo(
     () =>
@@ -89,7 +111,7 @@ export default function Accounts() {
     setError('');
     try {
       const nextAccounts = await listMailboxes();
-      setAccounts(nextAccounts);
+      setAccounts((current) => mergeAccountStatuses(nextAccounts, current));
       setSelectedAccountIds((current) => current.filter((item) => nextAccounts.some((account) => account.id === item)));
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : '加载邮箱档案失败');
@@ -104,6 +126,17 @@ export default function Accounts() {
 
   const openCreateModal = () => {
     setEditingAccount({ ...DEFAULT_FORM });
+  };
+
+  const openImportModal = () => {
+    setImportError('');
+    setImportDialogOpen(true);
+  };
+
+  const closeImportModal = () => {
+    setImportDialogOpen(false);
+    setImportForm(DEFAULT_IMPORT_FORM);
+    setImportError('');
   };
 
   const openEditModal = async (account: EmailAccount) => {
@@ -135,21 +168,25 @@ export default function Accounts() {
     );
   };
 
-  const handleImport = async () => {
-    const rawText = window.prompt('请输入批量导入内容，支持 JSON、CSV、TSV 或 ---- 分隔文本');
+  const handleImport = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const rawText = importForm.rawText.trim();
     if (!rawText) {
+      setImportError('批量导入内容不能为空');
       return;
     }
-    const preferredMethod = window.prompt('导入默认方式：graph_api / imap_new / imap_old', 'graph_api') as MethodValue | null;
-    if (!preferredMethod) {
-      return;
-    }
+    setImporting(true);
+    setError('');
+    setImportError('');
     try {
-      await importMailboxes(rawText, preferredMethod);
+      await importMailboxes(rawText, importForm.preferredMethod);
       await loadAccounts();
+      closeImportModal();
       window.alert(t('importSuccess'));
     } catch (requestError) {
-      window.alert(requestError instanceof Error ? requestError.message : t('importFailed'));
+      setImportError(requestError instanceof Error ? requestError.message : t('importFailed'));
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -218,13 +255,24 @@ export default function Accounts() {
     }
     try {
       const payload = await batchTestConnections(mailboxIds);
+      const statusMap = new Map<string, EmailAccount['status']>();
+      payload.results.forEach((item) => {
+        if (typeof item.mailbox_id === 'number') {
+          statusMap.set(String(item.mailbox_id), item.success === true ? 'connected' : 'disconnected');
+        }
+      });
+      setAccounts((current) =>
+        current.map((account) => {
+          const nextStatus = statusMap.get(account.id);
+          return nextStatus ? { ...account, status: nextStatus } : account;
+        }),
+      );
       const firstFailure = payload.results.find((item) => item.success === false) as { message?: string } | undefined;
       window.alert(
         firstFailure?.message
-          ? `部分失败：${firstFailure.message}`
+          ? `连接测试完成，成功 ${payload.summary.succeeded} 个，失败 ${payload.summary.failed} 个。首个失败：${firstFailure.message}`
           : `连接测试完成，成功 ${payload.summary.succeeded} 个。`,
       );
-      await loadAccounts();
     } catch (requestError) {
       window.alert(requestError instanceof Error ? requestError.message : '批量测试失败');
     }
@@ -259,7 +307,7 @@ export default function Accounts() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <Button variant="outline" onClick={handleImport}>
+          <Button variant="outline" onClick={openImportModal}>
             <Upload className="mr-2 h-4 w-4" />
             {t('import')}
           </Button>
@@ -283,7 +331,9 @@ export default function Accounts() {
 
         {selectedAccountIds.length > 0 ? (
           <div className="flex items-center gap-2 rounded-md bg-slate-100 px-3 py-1.5 dark:bg-slate-800">
-            <span className="mr-2 text-sm font-medium">{selectedAccountIds.length} selected</span>
+            <span className="mr-2 text-sm font-medium">
+              {selectedAccountIds.length} {t('selected')}
+            </span>
             <Button variant="secondary" size="sm" onClick={() => setSelectedAccountIds([])}>
               <XCircle className="mr-2 h-4 w-4" />
               {t('clearSelection')}
@@ -307,7 +357,7 @@ export default function Accounts() {
       {error ? <div className="mb-4 text-sm text-red-600 dark:text-red-400">{error}</div> : null}
 
       <div className="flex flex-1 flex-col overflow-hidden rounded-lg border border-slate-200 dark:border-slate-800">
-        <div className="overflow-x-auto">
+        <div className="flex-1 overflow-auto">
           <table className="w-full text-left text-sm">
             <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase text-slate-500 dark:border-slate-800 dark:bg-slate-900/50">
               <tr>
@@ -332,13 +382,13 @@ export default function Accounts() {
               {loading ? (
                 <tr>
                   <td colSpan={6} className="p-8 text-center text-slate-500">
-                    正在加载邮箱档案...
+                    {t('loadingAccounts')}
                   </td>
                 </tr>
               ) : filteredAccounts.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="p-8 text-center text-slate-500">
-                    No accounts found.
+                    {t('noAccounts')}
                   </td>
                 </tr>
               ) : (
@@ -361,8 +411,24 @@ export default function Accounts() {
                     </td>
                     <td className="p-4">
                       <div className="flex items-center gap-2">
-                        <CheckCircle2 className="h-4 w-4 text-slate-400" />
-                        <span className="text-slate-500">{t(account.status)}</span>
+                        {account.status === 'disconnected' ? (
+                          <XCircle className="h-4 w-4 text-red-500" />
+                        ) : (
+                          <CheckCircle2
+                            className={account.status === 'connected' ? 'h-4 w-4 text-emerald-500' : 'h-4 w-4 text-slate-400'}
+                          />
+                        )}
+                        <span
+                          className={
+                            account.status === 'connected'
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : account.status === 'disconnected'
+                                ? 'text-red-600 dark:text-red-400'
+                                : 'text-slate-500'
+                          }
+                        >
+                          {t(account.status)}
+                        </span>
                       </div>
                     </td>
                     <td className="p-4 text-slate-500">{account.notes || '-'}</td>
@@ -491,6 +557,73 @@ export default function Accounts() {
                 </Button>
                 <Button type="submit" disabled={saving}>
                   {saving ? '保存中...' : t('save')}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
+      {importDialogOpen ? (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6">
+          <div className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg dark:border-slate-800 dark:bg-slate-900">
+            <div className="border-b border-slate-200 px-6 py-4 dark:border-slate-800">
+              <h2 className="text-lg font-semibold">{t('importAccounts')}</h2>
+              <p className="mt-1 text-sm text-slate-500">{t('importLineHint')}</p>
+            </div>
+            <form onSubmit={handleImport} className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 space-y-4 overflow-y-auto px-6 py-5">
+                <div>
+                  <label className="mb-1 block text-sm font-medium">{t('defaultMethod')}</label>
+                  <select
+                    className="flex h-9 w-full rounded-md border border-slate-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors dark:border-slate-800"
+                    value={importForm.preferredMethod}
+                    onChange={(event) =>
+                      setImportForm((current) => ({
+                        ...current,
+                        preferredMethod: event.target.value as MethodValue,
+                      }))
+                    }
+                  >
+                    {METHOD_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-sm font-medium">{t('importPayload')}</label>
+                  <textarea
+                    className="min-h-64 w-full rounded-md border border-slate-200 bg-transparent px-3 py-2 font-mono text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-slate-950 dark:border-slate-800 dark:focus-visible:ring-slate-300"
+                    value={importForm.rawText}
+                    onChange={(event) =>
+                      setImportForm((current) => ({
+                        ...current,
+                        rawText: event.target.value,
+                      }))
+                    }
+                    placeholder={t('importPlaceholder')}
+                    spellCheck={false}
+                  />
+                </div>
+
+                <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-6 text-slate-500 dark:border-slate-800 dark:bg-slate-950/40">
+                  <div>{t('importSupportedFormats')}</div>
+                  <div>{t('importExampleSimple')}</div>
+                  <div>{t('importExampleKeyed')}</div>
+                </div>
+
+                {importError ? <div className="text-sm text-red-600 dark:text-red-400">{importError}</div> : null}
+              </div>
+
+              <div className="flex justify-end gap-2 border-t border-slate-200 px-6 py-4 dark:border-slate-800">
+                <Button type="button" variant="outline" onClick={closeImportModal} disabled={importing}>
+                  {t('cancel')}
+                </Button>
+                <Button type="submit" disabled={importing || !importForm.rawText.trim()}>
+                  {importing ? t('importing') : t('confirmImport')}
                 </Button>
               </div>
             </form>
