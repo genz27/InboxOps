@@ -1,6 +1,5 @@
 ﻿from __future__ import annotations
 
-import base64
 import csv
 import hashlib
 import hmac
@@ -14,7 +13,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Callable
 
-from flask import Flask, jsonify, render_template, request, send_from_directory, session
+from flask import Flask, jsonify, request, send_from_directory, session
 
 from services.outlook_manager import (
     FlagStateUpdateRequest,
