@@ -2296,36 +2296,155 @@ class MailboxStore:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_sync_jobs_lookup ON sync_jobs(mailbox_id, method, started_at DESC)"
             )
+            self._ensure_message_meta_schema(connection)
+            self._ensure_message_search_schema(connection)
+
+    def _table_columns(self, connection: sqlite3.Connection, table_name: str) -> set[str]:
+        try:
+            rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        except sqlite3.OperationalError:
+            return set()
+        return {str(row["name"] if isinstance(row, sqlite3.Row) else row[1]) for row in rows}
+
+    def _ensure_message_meta_schema(self, connection: sqlite3.Connection) -> None:
+        columns = self._table_columns(connection, "message_meta")
+        if not columns:
+            return
+        if "tags_text" not in columns:
+            connection.execute(
+                "ALTER TABLE message_meta ADD COLUMN tags_text TEXT NOT NULL DEFAULT ''"
+            )
+            # 从已有 tags_json 回填可搜索文本
+            rows = connection.execute(
+                "SELECT id, tags_json FROM message_meta WHERE COALESCE(tags_text, '') = ''"
+            ).fetchall()
+            for row in rows:
+                try:
+                    tags = json.loads(str(row["tags_json"] or "[]"))
+                except (TypeError, json.JSONDecodeError):
+                    tags = []
+                if not isinstance(tags, list):
+                    tags = []
+                tags_text = " ".join(
+                    str(item).strip() for item in tags if isinstance(item, str) and item.strip()
+                )
+                if tags_text:
+                    connection.execute(
+                        "UPDATE message_meta SET tags_text = ? WHERE id = ?",
+                        (tags_text, row["id"]),
+                    )
+
+    def _ensure_message_search_schema(self, connection: sqlite3.Connection) -> None:
+        """旧库可能缺少 tags_text；FTS 虚拟表无法 ALTER，需按需重建。"""
+        expected_columns = {
+            "document_id",
+            "subject",
+            "sender",
+            "preview",
+            "body_text",
+            "notes",
+            "tags_text",
+        }
+        existing = self._table_columns(connection, "message_search")
+        needs_rebuild = not existing or not expected_columns.issubset(existing)
+
+        if not needs_rebuild:
+            # 已存在且列齐全：根据建表 SQL 判断是否为 FTS5
             try:
-                connection.execute(
-                    """
-                    CREATE VIRTUAL TABLE IF NOT EXISTS message_search USING fts5(
-                        document_id UNINDEXED,
-                        subject,
-                        sender,
-                        preview,
-                        body_text,
-                        notes,
-                        tags_text
-                    )
-                    """
-                )
-                self._fts_enabled = True
-            except sqlite3.OperationalError:
+                sql_row = connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE name = 'message_search' LIMIT 1"
+                ).fetchone()
+                sql_text = ""
+                if sql_row is not None:
+                    sql_text = str(sql_row["sql"] if isinstance(sql_row, sqlite3.Row) else sql_row[0] or "")
+                self._fts_enabled = "fts5" in sql_text.casefold()
+            except (sqlite3.OperationalError, TypeError, IndexError):
                 self._fts_enabled = False
-                connection.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS message_search (
-                        document_id TEXT PRIMARY KEY,
-                        subject TEXT NOT NULL DEFAULT '',
-                        sender TEXT NOT NULL DEFAULT '',
-                        preview TEXT NOT NULL DEFAULT '',
-                        body_text TEXT NOT NULL DEFAULT '',
-                        notes TEXT NOT NULL DEFAULT '',
-                        tags_text TEXT NOT NULL DEFAULT ''
-                    )
-                    """
+            return
+
+        connection.execute("DROP TABLE IF EXISTS message_search")
+        try:
+            connection.execute(
+                """
+                CREATE VIRTUAL TABLE message_search USING fts5(
+                    document_id UNINDEXED,
+                    subject,
+                    sender,
+                    preview,
+                    body_text,
+                    notes,
+                    tags_text
                 )
+                """
+            )
+            self._fts_enabled = True
+        except sqlite3.OperationalError:
+            self._fts_enabled = False
+            connection.execute(
+                """
+                CREATE TABLE message_search (
+                    document_id TEXT PRIMARY KEY,
+                    subject TEXT NOT NULL DEFAULT '',
+                    sender TEXT NOT NULL DEFAULT '',
+                    preview TEXT NOT NULL DEFAULT '',
+                    body_text TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT '',
+                    tags_text TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+
+        self._rebuild_message_search_index(connection)
+
+    def _rebuild_message_search_index(self, connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            """
+            SELECT
+                c.mailbox_id,
+                c.method,
+                c.provider_message_id,
+                c.subject,
+                c.sender,
+                c.preview,
+                c.body_text,
+                COALESCE(mm.notes, '') AS notes,
+                COALESCE(mm.tags_text, '') AS tags_text
+            FROM message_cache AS c
+            LEFT JOIN message_meta AS mm
+                ON mm.mailbox_id = c.mailbox_id
+                AND mm.method = c.method
+                AND mm.provider_message_id = c.provider_message_id
+            """
+        ).fetchall()
+        for row in rows:
+            document_id = self._build_document_id(
+                int(row["mailbox_id"]),
+                str(row["method"]),
+                str(row["provider_message_id"]),
+            )
+            connection.execute(
+                """
+                INSERT INTO message_search (
+                    document_id,
+                    subject,
+                    sender,
+                    preview,
+                    body_text,
+                    notes,
+                    tags_text
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    document_id,
+                    str(row["subject"] or ""),
+                    str(row["sender"] or ""),
+                    str(row["preview"] or ""),
+                    str(row["body_text"] or ""),
+                    str(row["notes"] or ""),
+                    str(row["tags_text"] or ""),
+                ),
+            )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
