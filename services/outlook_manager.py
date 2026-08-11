@@ -520,6 +520,15 @@ class OutlookMailboxManager:
         raise MailboxError(f"不支持的方法: {target_method}")
 
     def list_messages(self, config: MailboxConfig, method: str | None = None) -> list[dict[str, Any]]:
+        messages, _total = self.list_messages_page(config, method)
+        return messages
+
+    def list_messages_page(
+        self,
+        config: MailboxConfig,
+        method: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """返回当前页消息与过滤后的总数（在抓取窗口内）。"""
         target_method = method or config.default_method
         if target_method == METHOD_IMAP_OLD:
             return self._list_messages_imap(config, METHOD_IMAP_OLD)
@@ -683,35 +692,77 @@ class OutlookMailboxManager:
         folders = [self._normalize_graph_folder(item) for item in response.json().get("value", [])]
         return self._ensure_default_graph_folders(folders)
 
-    def _list_messages_graph(self, config: MailboxConfig) -> list[dict[str, Any]]:
+    def _list_messages_graph(self, config: MailboxConfig) -> tuple[list[dict[str, Any]], int]:
         token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
-        window = min(max(max(config.page * config.page_size, config.top) * 4, 50), 500)
+        page_size = max(int(config.page_size or config.top or 20), 1)
+        page = max(int(config.page or 1), 1)
+        keyword = str(config.keyword or "").strip()
         filters = self._build_graph_filters(config)
-        params: dict[str, Any] = {
-            "$top": window,
-            "$select": (
-                "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview,"
-                "internetMessageId,flag,importance,conversationId"
-            ),
-            "$orderby": f"receivedDateTime {self._normalize_sort_order(config.sort_order)}",
+        select_fields = (
+            "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview,"
+            "internetMessageId,flag,importance,conversationId"
+        )
+        sort_order = self._normalize_sort_order(config.sort_order)
+        folder_id = quote(self._normalize_graph_folder_id(config.folder), safe="")
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Prefer": "outlook.body-content-type='text'",
+            "ConsistencyLevel": "eventual",
+        }
+
+        # 关键字搜索与 $filter/$orderby 组合兼容性差：退回窗口抓取 + 本地过滤分页
+        if keyword:
+            window = min(max(max(page * page_size, config.top) * 4, 50), 500)
+            params: dict[str, Any] = {
+                "$top": window,
+                "$select": select_fields,
+                "$orderby": f"receivedDateTime {sort_order}",
+            }
+            if filters:
+                params["$filter"] = " and ".join(filters)
+            response = requests.get(
+                GRAPH_MESSAGES_URL.format(folder_id=folder_id),
+                headers=headers,
+                params=params,
+                proxies=self._build_requests_proxies(config.proxy),
+                timeout=30,
+            )
+            self._raise_for_response(response, "Graph API 读取邮件失败")
+            messages = [
+                self._normalize_graph_summary(item, folder=config.folder)
+                for item in response.json().get("value", [])
+            ]
+            return self._filter_and_paginate_messages(messages, config)
+
+        # 服务端真分页：$skip + $top + $count
+        params = {
+            "$top": page_size,
+            "$skip": (page - 1) * page_size,
+            "$count": "true",
+            "$select": select_fields,
+            "$orderby": f"receivedDateTime {sort_order}",
         }
         if filters:
             params["$filter"] = " and ".join(filters)
 
         response = requests.get(
-            GRAPH_MESSAGES_URL.format(folder_id=quote(self._normalize_graph_folder_id(config.folder), safe="")),
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Prefer": "outlook.body-content-type='text'",
-            },
+            GRAPH_MESSAGES_URL.format(folder_id=folder_id),
+            headers=headers,
             params=params,
             proxies=self._build_requests_proxies(config.proxy),
             timeout=30,
         )
         self._raise_for_response(response, "Graph API 读取邮件失败")
-
-        messages = [self._normalize_graph_summary(item, folder=config.folder) for item in response.json().get("value", [])]
-        return self._filter_messages(messages, config)
+        payload = response.json()
+        raw_items = payload.get("value", []) if isinstance(payload, dict) else []
+        messages = [self._normalize_graph_summary(item, folder=config.folder) for item in raw_items]
+        total = payload.get("@odata.count") if isinstance(payload, dict) else None
+        if isinstance(total, int) and total >= 0:
+            return messages, total
+        # 无 count 时根据是否还有下一页做保守估算
+        if len(messages) < page_size:
+            return messages, (page - 1) * page_size + len(messages)
+        return messages, page * page_size + 1
 
     def _get_message_detail_graph(self, config: MailboxConfig, message_id: str) -> dict[str, Any]:
         token = self._get_access_token_graph(config.client_id, config.refresh_token, config.proxy)
@@ -1136,7 +1187,7 @@ class OutlookMailboxManager:
         finally:
             self._logout_imap(connection)
 
-    def _list_messages_imap(self, config: MailboxConfig, method: str) -> list[dict[str, Any]]:
+    def _list_messages_imap(self, config: MailboxConfig, method: str) -> tuple[list[dict[str, Any]], int]:
         token = self._get_access_token_for_imap(config, method)
         connection = self._open_imap_connection(config.email, token, method)
         folder_name = self._normalize_imap_folder_name(config.folder)
@@ -1146,14 +1197,39 @@ class OutlookMailboxManager:
             search_criteria = self._build_imap_search_criteria(config)
             status, data = connection.uid("SEARCH", None, *search_criteria)
             if status != "OK" or not data or not data[0]:
-                return []
+                return [], 0
 
             uid_list = [item for item in data[0].split() if item]
-            window = min(max(max(config.page * config.page_size, config.top) * 4, 50), 500)
+            page_size = max(int(config.page_size or config.top or 20), 1)
+            page = max(int(config.page or 1), 1)
+            keyword = str(config.keyword or "").strip()
+            needs_local_filter = bool(
+                keyword or config.has_attachments_only or config.importance not in {"", DEFAULT_IMPORTANCE, "all"}
+            )
+
+            # 无本地过滤条件时按 UID 直接切片，总数精确
+            if not needs_local_filter:
+                ordered_uids = list(reversed(uid_list))
+                total = len(ordered_uids)
+                start = (page - 1) * page_size
+                end = start + page_size
+                page_uids = ordered_uids[start:end]
+                messages = [
+                    item
+                    for item in (
+                        self._build_imap_summary(connection, uid, method, folder_name) for uid in page_uids
+                    )
+                    if item
+                ]
+                reverse = self._normalize_sort_order(config.sort_order) == "desc"
+                messages.sort(key=lambda item: str(item.get("received_at", "")), reverse=reverse)
+                return messages, total
+
+            window = min(max(max(page * page_size, config.top) * 4, 50), 500)
             target_uids = list(reversed(uid_list[-window:]))
             messages = [self._build_imap_summary(connection, uid, method, folder_name) for uid in target_uids]
             messages = [item for item in messages if item]
-            return self._filter_messages(messages, config)
+            return self._filter_and_paginate_messages(messages, config)
         finally:
             self._logout_imap(connection)
 
@@ -1898,9 +1974,26 @@ class OutlookMailboxManager:
             ]
         reverse = self._normalize_sort_order(config.sort_order) == "desc"
         filtered.sort(key=lambda item: str(item.get("received_at", "")), reverse=reverse)
-        start = max((config.page - 1) * config.page_size, 0)
-        end = start + config.page_size
-        return filtered[start:end]
+        return filtered
+
+    def _paginate_messages(
+        self,
+        messages: list[dict[str, Any]],
+        config: MailboxConfig,
+    ) -> tuple[list[dict[str, Any]], int]:
+        total = len(messages)
+        page_size = max(int(config.page_size or config.top or 20), 1)
+        page = max(int(config.page or 1), 1)
+        start = (page - 1) * page_size
+        end = start + page_size
+        return messages[start:end], total
+
+    def _filter_and_paginate_messages(
+        self,
+        messages: list[dict[str, Any]],
+        config: MailboxConfig,
+    ) -> tuple[list[dict[str, Any]], int]:
+        return self._paginate_messages(self._filter_messages(messages, config), config)
 
     def _decode_header_value(self, header_value: Any) -> str:
         if not header_value:
@@ -2234,10 +2327,10 @@ class MailboxManager:
             importance=request.importance,
             sort_order=request.sort_order,
         )
-        raw_messages = self._inner.list_messages(effective, request.method)
+        raw_messages, total = self._inner.list_messages_page(effective, request.method)
         messages = [self._to_summary(item, request.method, request.folder) for item in raw_messages]
-        total = len(messages)
-        total_pages = (total + request.page_size - 1) // request.page_size if total else 0
+        page_size = max(request.page_size, 1)
+        total_pages = (total + page_size - 1) // page_size if total else 0
         return MessageListResult(
             method=request.method,
             total=total,

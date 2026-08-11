@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Navigate, useNavigate } from 'react-router-dom';
 import { Mail } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { useI18n } from '../i18n';
@@ -8,13 +8,17 @@ import { Input } from '../components/ui/Input';
 import { login as loginRequest } from '../lib/api';
 
 export default function Login() {
-  const { login } = useAppStore();
+  const { login, isAdmin, authReady } = useAppStore();
   const { t } = useI18n();
   const navigate = useNavigate();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+
+  if (authReady && isAdmin) {
+    return <Navigate to="/" replace />;
+  }
 
   const handleLogin = async (event: React.FormEvent) => {
     event.preventDefault();

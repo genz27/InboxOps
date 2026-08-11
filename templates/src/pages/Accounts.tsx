@@ -87,8 +87,10 @@ export default function Accounts() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [batchBusy, setBatchBusy] = useState('');
   const [error, setError] = useState('');
   const [importError, setImportError] = useState('');
+  const [notice, setNotice] = useState('');
 
   const filteredAccounts = useMemo(
     () =>
@@ -233,26 +235,32 @@ export default function Accounts() {
   };
 
   const handleBatchDelete = async () => {
-    if (selectedAccountIds.length === 0) {
+    if (selectedAccountIds.length === 0 || batchBusy) {
       return;
     }
     if (!window.confirm(`确认删除 ${selectedAccountIds.length} 个邮箱档案吗？`)) {
       return;
     }
+    setBatchBusy('delete');
+    setError('');
     try {
       const payload = await batchDeleteMailboxes(selectedAccountIds);
-      window.alert(`已处理 ${payload.summary.processed} 个档案，成功 ${payload.summary.succeeded} 个。`);
+      setNotice(`已处理 ${payload.summary.processed} 个档案，成功 ${payload.summary.succeeded} 个，失败 ${payload.summary.failed} 个。`);
       await loadAccounts();
       setSelectedAccountIds([]);
     } catch (requestError) {
-      window.alert(requestError instanceof Error ? requestError.message : '批量删除失败');
+      setError(requestError instanceof Error ? requestError.message : '批量删除失败');
+    } finally {
+      setBatchBusy('');
     }
   };
 
   const handleBatchTest = async (mailboxIds: string[]) => {
-    if (mailboxIds.length === 0) {
+    if (mailboxIds.length === 0 || batchBusy) {
       return;
     }
+    setBatchBusy('test');
+    setError('');
     try {
       const payload = await batchTestConnections(mailboxIds);
       const statusMap = new Map<string, EmailAccount['status']>();
@@ -268,18 +276,20 @@ export default function Accounts() {
         }),
       );
       const firstFailure = payload.results.find((item) => item.success === false) as { message?: string } | undefined;
-      window.alert(
+      setNotice(
         firstFailure?.message
-          ? `连接测试完成，成功 ${payload.summary.succeeded} 个，失败 ${payload.summary.failed} 个。首个失败：${firstFailure.message}`
-          : `连接测试完成，成功 ${payload.summary.succeeded} 个。`,
+          ? `连接测试完成：成功 ${payload.summary.succeeded}，失败 ${payload.summary.failed}。首个失败：${firstFailure.message}`
+          : `连接测试完成：成功 ${payload.summary.succeeded} 个。`,
       );
     } catch (requestError) {
-      window.alert(requestError instanceof Error ? requestError.message : '批量测试失败');
+      setError(requestError instanceof Error ? requestError.message : '批量测试失败');
+    } finally {
+      setBatchBusy('');
     }
   };
 
   const handleBatchChangeMethod = async () => {
-    if (selectedAccountIds.length === 0) {
+    if (selectedAccountIds.length === 0 || batchBusy) {
       return;
     }
     const nextMethod = window.prompt('请输入新的默认方式：graph_api / imap_new / imap_old', 'graph_api') as
@@ -288,14 +298,30 @@ export default function Accounts() {
     if (!nextMethod) {
       return;
     }
+    if (!['graph_api', 'imap_new', 'imap_old'].includes(nextMethod)) {
+      setError('接入方式仅支持 graph_api / imap_new / imap_old');
+      return;
+    }
+    setBatchBusy('method');
+    setError('');
     try {
       const payload = await batchUpdatePreferredMethod(selectedAccountIds, nextMethod);
-      window.alert(`已切换 ${payload.summary.succeeded} 个档案。`);
+      setNotice(`已切换 ${payload.summary.succeeded} 个档案的默认接入方式。`);
       await loadAccounts();
     } catch (requestError) {
-      window.alert(requestError instanceof Error ? requestError.message : '批量切换失败');
+      setError(requestError instanceof Error ? requestError.message : '批量切换失败');
+    } finally {
+      setBatchBusy('');
     }
   };
+
+  useEffect(() => {
+    if (!notice) {
+      return;
+    }
+    const timerId = window.setTimeout(() => setNotice(''), 3500);
+    return () => window.clearTimeout(timerId);
+  }, [notice]);
 
   return (
     <div className="relative flex h-full flex-1 flex-col overflow-hidden bg-white p-6 dark:bg-slate-950">
@@ -354,7 +380,24 @@ export default function Accounts() {
         ) : null}
       </div>
 
-      {error ? <div className="mb-4 text-sm text-red-600 dark:text-red-400">{error}</div> : null}
+      {error ? (
+        <div className="mb-4 flex items-start justify-between gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-300">
+          <span className="min-w-0 flex-1 break-words">{error}</span>
+          <button type="button" className="shrink-0 opacity-70 hover:opacity-100" onClick={() => setError('')}>
+            <XCircle className="h-4 w-4" />
+          </button>
+        </div>
+      ) : null}
+      {notice ? (
+        <div className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-300">
+          {notice}
+        </div>
+      ) : null}
+      {batchBusy ? (
+        <div className="mb-4 text-xs text-slate-500">
+          {batchBusy === 'test' ? '正在测试连接…' : batchBusy === 'delete' ? '正在删除…' : '正在更新…'}
+        </div>
+      ) : null}
 
       <div className="flex flex-1 flex-col overflow-hidden rounded-lg border border-slate-200 dark:border-slate-800">
         <div className="flex-1 overflow-auto">
@@ -365,10 +408,20 @@ export default function Accounts() {
                   <input
                     type="checkbox"
                     className="rounded border-slate-300"
-                    checked={filteredAccounts.length > 0 && selectedAccountIds.length === filteredAccounts.length}
-                    onChange={(event) =>
-                      setSelectedAccountIds(event.target.checked ? filteredAccounts.map((account) => account.id) : [])
+                    checked={
+                      filteredAccounts.length > 0 &&
+                      filteredAccounts.every((account) => selectedAccountIds.includes(account.id))
                     }
+                    onChange={(event) => {
+                      if (event.target.checked) {
+                        setSelectedAccountIds((current) =>
+                          Array.from(new Set([...current, ...filteredAccounts.map((account) => account.id)])),
+                        );
+                      } else {
+                        const filteredIds = new Set(filteredAccounts.map((account) => account.id));
+                        setSelectedAccountIds((current) => current.filter((id) => !filteredIds.has(id)));
+                      }
+                    }}
                   />
                 </th>
                 <th className="p-4 font-medium">{t('email')}</th>

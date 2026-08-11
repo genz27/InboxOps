@@ -490,14 +490,48 @@ export async function changeAdminPassword(payload: {
 }
 
 export async function listMailboxes(params?: { q?: string; page?: number; page_size?: number }): Promise<EmailAccount[]> {
-  const query = new URLSearchParams();
-  query.set('page', String(params?.page ?? 1));
-  query.set('page_size', String(params?.page_size ?? 100));
-  if (params?.q) {
-    query.set('q', params.q);
+  // 单页查询：调用方明确指定 page 时只取该页。
+  if (params?.page != null) {
+    const query = new URLSearchParams();
+    query.set('page', String(params.page));
+    query.set('page_size', String(params.page_size ?? 100));
+    if (params?.q) {
+      query.set('q', params.q);
+    }
+    const payload = await requestJson<{ items: MailboxSummary[] }>(`/api/mailboxes?${query.toString()}`);
+    return payload.items.map(mapMailbox);
   }
-  const payload = await requestJson<{ items: MailboxSummary[] }>(`/api/mailboxes?${query.toString()}`);
-  return payload.items.map(mapMailbox);
+
+  // 默认拉全量，避免账号超过 100 时侧边栏/账号页静默截断。
+  const pageSize = Math.min(Math.max(params?.page_size ?? 100, 1), 100);
+  const accounts: EmailAccount[] = [];
+  let page = 1;
+  let totalPages = 1;
+
+  while (page <= totalPages) {
+    const query = new URLSearchParams();
+    query.set('page', String(page));
+    query.set('page_size', String(pageSize));
+    if (params?.q) {
+      query.set('q', params.q);
+    }
+    const payload = await requestJson<{
+      items: MailboxSummary[];
+      meta?: PaginationMeta;
+    }>(`/api/mailboxes?${query.toString()}`);
+    accounts.push(...payload.items.map(mapMailbox));
+    totalPages = Math.max(asNumber(payload.meta?.total_pages, 1), 1);
+    if (payload.items.length === 0) {
+      break;
+    }
+    page += 1;
+    // 防御性上限，避免异常 meta 导致死循环
+    if (page > 50) {
+      break;
+    }
+  }
+
+  return accounts;
 }
 
 export async function createMailbox(payload: {

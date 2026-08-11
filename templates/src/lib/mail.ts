@@ -104,6 +104,31 @@ export function methodLabel(method: MailMethod): string {
   }[normalized];
 }
 
+export function isGraphMethod(method: MailMethod | undefined): boolean {
+  return normalizeMethod(method) === 'graph_api';
+}
+
+/** 当前接入方式支持的能力，用于 UI 禁用与提示 */
+export function methodCapabilities(method: MailMethod | undefined) {
+  const graph = isGraphMethod(method);
+  return {
+    method: normalizeMethod(method),
+    isGraph: graph,
+    canCompose: graph,
+    canReply: graph,
+    canForward: graph,
+    canSaveDraft: graph,
+    canManageFolders: graph,
+    canUploadAttachment: graph,
+    canReadWriteFlags: true,
+    canMoveDelete: true,
+    canDownloadAttachment: true,
+    writeUnsupportedHint: graph
+      ? ''
+      : '当前为 IMAP 接入，发信 / 回复 / 转发 / 草稿 / 文件夹管理仅 Graph API 支持',
+  };
+}
+
 export function emptyMeta(): MessageMeta {
   return {
     tags: [],

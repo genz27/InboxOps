@@ -1,4 +1,4 @@
-import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
+import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Archive,
@@ -64,7 +64,14 @@ import {
   updateReadState,
   updateRule,
 } from '../lib/api';
-import { emptyMeta, fileToAttachmentPayload, fromDatetimeLocalValue, methodLabel, toDatetimeLocalValue } from '../lib/mail';
+import {
+  emptyMeta,
+  fileToAttachmentPayload,
+  fromDatetimeLocalValue,
+  methodCapabilities,
+  methodLabel,
+  toDatetimeLocalValue,
+} from '../lib/mail';
 import { useAppStore, type Email, type EmailAccount, type Folder, type MessageMeta, type MethodValue } from '../store/useAppStore';
 
 const ITEMS_PER_PAGE = 20;
@@ -162,10 +169,25 @@ function joinRecipients(items: string[]): string {
   return items.join(', ');
 }
 
+function formatMailDate(value: string | undefined | null, pattern = 'yyyy-MM-dd HH:mm'): string {
+  if (!value) {
+    return '-';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '-';
+  }
+  try {
+    return format(date, pattern);
+  } catch {
+    return '-';
+  }
+}
+
 function makeQuotedBody(message: Email): string {
-  const receivedAt = message.date ? format(new Date(message.date), 'yyyy-MM-dd HH:mm') : '';
+  const receivedAt = formatMailDate(message.date);
   const quoted = message.body_text || message.preview || '';
-  return `\n\n\n--- 原始邮件 ---\n主题: ${message.subject}\n发件人: ${message.sender}\n时间: ${receivedAt}\n\n${quoted}`;
+  return `\n\n\n--- 原始邮件 ---\n主题: ${message.subject}\n发件人: ${message.sender}\n时间: ${receivedAt === '-' ? '' : receivedAt}\n\n${quoted}`;
 }
 
 function titleWithPrefix(prefix: string, subject: string): string {
@@ -263,15 +285,40 @@ export default function Workspace() {
   const [opsOpen, setOpsOpen] = useState(false);
   const [ruleEditor, setRuleEditor] = useState<RuleEditorState>(EMPTY_RULE_EDITOR);
   const [pendingFocus, setPendingFocus] = useState<PendingFocus | null>(null);
+  const messagesRequestIdRef = useRef(0);
+  const detailRequestIdRef = useRef(0);
+  const foldersRequestIdRef = useRef(0);
+  const loadingMessagesRef = useRef(false);
+  const loadingDetailRef = useRef(false);
+  const busyActionRef = useRef('');
 
   const activeMailbox = useMemo(
     () => accounts.find((account) => account.id === activeMailboxId) ?? null,
     [accounts, activeMailboxId],
   );
   const activeMethod: MethodValue = activeMailbox?.preferredMethod ?? 'graph_api';
+  const capabilities = useMemo(() => methodCapabilities(activeMethod), [activeMethod]);
   const activeFolder = useMemo(() => folders.find((folder) => folder.id === activeFolderId) ?? null, [folders, activeFolderId]);
   const allVisibleSelected = messages.length > 0 && messages.every((message) => selectedMessageIds.includes(message.id));
   const syncStatus = syncItems[0] ?? null;
+  const latestJob = syncStatus?.jobs?.[0] ?? null;
+
+  useEffect(() => {
+    loadingMessagesRef.current = loadingMessages;
+  }, [loadingMessages]);
+
+  useEffect(() => {
+    loadingDetailRef.current = loadingDetail;
+  }, [loadingDetail]);
+
+  useEffect(() => {
+    busyActionRef.current = busyAction;
+  }, [busyAction]);
+
+  const syncFolders = useAppStore((state) => state.setFolders);
+  const syncEmails = useAppStore((state) => state.setEmails);
+  const syncActiveFolderId = useAppStore((state) => state.setActiveFolderId);
+  const syncActiveEmailId = useAppStore((state) => state.setActiveEmailId);
 
   useEffect(() => {
     syncAccounts(accounts);
@@ -280,6 +327,31 @@ export default function Workspace() {
   useEffect(() => {
     syncActiveMailboxId(activeMailboxId || null);
   }, [activeMailboxId, syncActiveMailboxId]);
+
+  useEffect(() => {
+    syncFolders(folders);
+  }, [folders, syncFolders]);
+
+  useEffect(() => {
+    syncEmails(messages);
+  }, [messages, syncEmails]);
+
+  useEffect(() => {
+    syncActiveFolderId(activeFolderId || null);
+  }, [activeFolderId, syncActiveFolderId]);
+
+  useEffect(() => {
+    syncActiveEmailId(activeMessageId || null);
+  }, [activeMessageId, syncActiveEmailId]);
+
+  // 成功提示自动消失，避免长期遮挡列表操作区
+  useEffect(() => {
+    if (!notice) {
+      return;
+    }
+    const timerId = window.setTimeout(() => setNotice(''), 3200);
+    return () => window.clearTimeout(timerId);
+  }, [notice]);
 
   async function loadAccounts() {
     setLoadingAccounts(true);
@@ -308,9 +380,14 @@ export default function Workspace() {
   }
 
   async function loadFoldersForMailbox(mailboxId: string, method: MethodValue) {
+    const requestId = foldersRequestIdRef.current + 1;
+    foldersRequestIdRef.current = requestId;
     setLoadingFolders(true);
     try {
       const items = await listFolders(mailboxId, method);
+      if (foldersRequestIdRef.current !== requestId) {
+        return;
+      }
       setFolders(items);
       setActiveFolderId((current) => {
         if (items.some((item) => item.id === current)) {
@@ -319,11 +396,16 @@ export default function Workspace() {
         return items.find((item) => item.type === 'inbox')?.id ?? items[0]?.id ?? 'INBOX';
       });
     } catch (requestError) {
+      if (foldersRequestIdRef.current !== requestId) {
+        return;
+      }
       setError(requestError instanceof Error ? requestError.message : '加载文件夹失败');
       setFolders([]);
       setActiveFolderId('');
     } finally {
-      setLoadingFolders(false);
+      if (foldersRequestIdRef.current === requestId) {
+        setLoadingFolders(false);
+      }
     }
   }
 
@@ -331,6 +413,11 @@ export default function Workspace() {
     if (!activeMailbox || !activeFolderId) {
       return;
     }
+    const requestId = messagesRequestIdRef.current + 1;
+    messagesRequestIdRef.current = requestId;
+    const requestMailboxId = activeMailbox.id;
+    const requestFolderId = activeFolderId;
+    const requestMethod = activeMethod;
     const silent = options?.silent === true;
     if (!silent) {
       setLoadingMessages(true);
@@ -338,9 +425,9 @@ export default function Workspace() {
     }
     try {
       const response = await listMessages({
-        mailboxId: activeMailbox.id,
-        method: activeMethod,
-        folder: activeFolderId,
+        mailboxId: requestMailboxId,
+        method: requestMethod,
+        folder: requestFolderId,
         page: nextPage,
         pageSize: ITEMS_PER_PAGE,
         keyword: deferredSearchQuery,
@@ -349,6 +436,9 @@ export default function Workspace() {
         hasAttachmentsOnly: filterAttachment,
         sortOrder,
       });
+      if (messagesRequestIdRef.current !== requestId) {
+        return;
+      }
       setMessages(response.items);
       setListMeta(response.meta);
       setSelectedMessageIds((current) => current.filter((item) => response.items.some((message) => message.id === item)));
@@ -358,13 +448,16 @@ export default function Workspace() {
         setThreadItems([]);
       }
     } catch (requestError) {
+      if (messagesRequestIdRef.current !== requestId) {
+        return;
+      }
       if (!silent) {
         setError(requestError instanceof Error ? requestError.message : '加载邮件失败');
         setMessages([]);
         setListMeta(EMPTY_PAGINATION);
       }
     } finally {
-      if (!silent) {
+      if (!silent && messagesRequestIdRef.current === requestId) {
         setLoadingMessages(false);
       }
     }
@@ -374,21 +467,52 @@ export default function Workspace() {
     if (!activeMailbox || !messageId) {
       return;
     }
+    const requestId = detailRequestIdRef.current + 1;
+    detailRequestIdRef.current = requestId;
+    const requestMailboxId = activeMailbox.id;
+    const requestMethod = activeMethod;
+    setActiveMessageId(messageId);
     setLoadingDetail(true);
     setError('');
     try {
       const message = await getMessage({
-        mailboxId: activeMailbox.id,
-        method: activeMethod,
+        mailboxId: requestMailboxId,
+        method: requestMethod,
         folder: folderId,
         messageId,
       });
-      setActiveMessageId(messageId);
+      if (detailRequestIdRef.current !== requestId) {
+        return;
+      }
       setActiveMessage(message);
+      // 打开未读邮件时自动标已读，减少一次手动点击
+      if (!message.is_read && activeMailbox) {
+        void updateReadState({
+          mailboxId: requestMailboxId,
+          method: requestMethod,
+          folder: folderId,
+          messageId,
+          isRead: true,
+        })
+          .then((nextMessage) => {
+            if (detailRequestIdRef.current !== requestId) {
+              return;
+            }
+            updateMessageCollection(nextMessage);
+          })
+          .catch(() => {
+            // 自动标已读失败不打断阅读
+          });
+      }
     } catch (requestError) {
+      if (detailRequestIdRef.current !== requestId) {
+        return;
+      }
       setError(requestError instanceof Error ? requestError.message : '加载邮件详情失败');
     } finally {
-      setLoadingDetail(false);
+      if (detailRequestIdRef.current === requestId) {
+        setLoadingDetail(false);
+      }
     }
   }
 
@@ -444,6 +568,36 @@ export default function Workspace() {
     void loadAccounts();
   }, []);
 
+  // Esc 关闭详情（移动端从列表进详情后的返回手势补充）
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        if (compose.open) {
+          setCompose(EMPTY_COMPOSE);
+          return;
+        }
+        if (searchOpen) {
+          setSearchOpen(false);
+          return;
+        }
+        if (rulesOpen) {
+          setRulesOpen(false);
+          return;
+        }
+        if (opsOpen) {
+          setOpsOpen(false);
+          return;
+        }
+        if (activeMessageId) {
+          setActiveMessageId('');
+          setActiveMessage(null);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [compose.open, searchOpen, rulesOpen, opsOpen, activeMessageId]);
+
   useEffect(() => {
     if (!activeMailbox) {
       return;
@@ -465,7 +619,12 @@ export default function Workspace() {
     }
 
     const timerId = window.setInterval(() => {
-      if (document.visibilityState === 'hidden' || loadingMessages || loadingDetail || busyAction !== '') {
+      if (
+        document.visibilityState === 'hidden' ||
+        loadingMessagesRef.current ||
+        loadingDetailRef.current ||
+        busyActionRef.current !== ''
+      ) {
         return;
       }
       void loadMessagesForFolder(page, { silent: true });
@@ -484,9 +643,6 @@ export default function Workspace() {
     filterStarred,
     filterAttachment,
     sortOrder,
-    loadingMessages,
-    loadingDetail,
-    busyAction,
   ]);
 
   useEffect(() => {
@@ -535,12 +691,19 @@ export default function Workspace() {
       await loadAccounts();
       return;
     }
+    if (page !== 1) {
+      setPage(1);
+      await Promise.all([
+        loadFoldersForMailbox(activeMailbox.id, activeMethod),
+        loadOpsForMailbox(activeMailbox.id),
+      ]);
+      return;
+    }
     await Promise.all([
       loadFoldersForMailbox(activeMailbox.id, activeMethod),
       loadMessagesForFolder(1),
       loadOpsForMailbox(activeMailbox.id),
     ]);
-    setPage(1);
   }
 
   function updateNotice(message: string) {
@@ -607,12 +770,24 @@ export default function Workspace() {
         action,
         destinationFolder,
       });
-      if (messageIds.includes(activeMessageId)) {
+      const clearsActiveMessage = action === 'delete' || action === 'archive' || action === 'move';
+      if (clearsActiveMessage && messageIds.includes(activeMessageId)) {
         setActiveMessage(null);
         setActiveMessageId('');
       }
       setSelectedMessageIds((current) => current.filter((item) => !messageIds.includes(item)));
-      updateNotice(`操作完成，成功 ${payload.summary.succeeded} 条`);
+      if (!clearsActiveMessage && activeMessage && messageIds.includes(activeMessage.id)) {
+        const nextRead =
+          action === 'mark_read' ? true : action === 'mark_unread' ? false : activeMessage.is_read;
+        const nextFlagged =
+          action === 'flag' ? true : action === 'unflag' ? false : activeMessage.is_flagged;
+        updateMessageCollection({
+          ...activeMessage,
+          is_read: nextRead,
+          is_flagged: nextFlagged,
+        });
+      }
+      updateNotice(`操作完成，成功 ${payload.summary.succeeded} 条，失败 ${payload.summary.failed} 条`);
       await loadMessagesForFolder(page);
       await loadOpsForMailbox(activeMailbox.id);
     } catch (requestError) {
@@ -672,6 +847,10 @@ export default function Workspace() {
   }
 
   function openCompose(mode: ComposeMode, message?: Email | null) {
+    if (!capabilities.canCompose) {
+      updateError(new Error(capabilities.writeUnsupportedHint), capabilities.writeUnsupportedHint);
+      return;
+    }
     if (!message) {
       setCompose({ ...EMPTY_COMPOSE, open: true, mode: 'new' });
       return;
@@ -702,6 +881,10 @@ export default function Workspace() {
   }
 
   function openDraftEditor(message: Email) {
+    if (!capabilities.canSaveDraft) {
+      updateError(new Error(capabilities.writeUnsupportedHint), capabilities.writeUnsupportedHint);
+      return;
+    }
     setCompose({
       open: true,
       mode: 'new',
@@ -828,6 +1011,10 @@ export default function Workspace() {
 
   async function handleFolderAction(type: 'create' | 'rename' | 'delete') {
     if (!activeMailbox) {
+      return;
+    }
+    if (!capabilities.canManageFolders) {
+      updateError(new Error(capabilities.writeUnsupportedHint), capabilities.writeUnsupportedHint);
       return;
     }
     try {
@@ -1053,11 +1240,24 @@ export default function Workspace() {
                 <button
                   key={account.id}
                   onClick={() => {
+                    if (account.id === activeMailboxId) {
+                      return;
+                    }
+                    // 先清空文件夹，避免新邮箱仍用旧 folderId 发起错误请求
+                    messagesRequestIdRef.current += 1;
+                    detailRequestIdRef.current += 1;
+                    foldersRequestIdRef.current += 1;
                     setActiveMailboxId(account.id);
+                    setFolders([]);
+                    setActiveFolderId('');
+                    setMessages([]);
+                    setListMeta(EMPTY_PAGINATION);
                     setPage(1);
                     setSelectedMessageIds([]);
                     setActiveMessageId('');
                     setActiveMessage(null);
+                    setThreadItems([]);
+                    setError('');
                   }}
                   className={cn(
                     'w-full rounded-lg border px-3 py-2 text-left transition-colors',
@@ -1112,14 +1312,22 @@ export default function Workspace() {
               <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">{t('folders')}</h2>
             </button>
             <div className="flex items-center gap-1">
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => void handleFolderAction('create')}>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                disabled={!capabilities.canManageFolders}
+                title={capabilities.canManageFolders ? '新建文件夹' : capabilities.writeUnsupportedHint}
+                onClick={() => void handleFolderAction('create')}
+              >
                 <FolderPlus className="h-4 w-4" />
               </Button>
               <Button
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7"
-                disabled={!activeFolder || activeFolder.type !== 'custom'}
+                disabled={!capabilities.canManageFolders || !activeFolder || activeFolder.type !== 'custom'}
+                title={capabilities.canManageFolders ? '重命名文件夹' : capabilities.writeUnsupportedHint}
                 onClick={() => void handleFolderAction('rename')}
               >
                 <FolderPen className="h-4 w-4" />
@@ -1128,7 +1336,8 @@ export default function Workspace() {
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7"
-                disabled={!activeFolder || activeFolder.type !== 'custom'}
+                disabled={!capabilities.canManageFolders || !activeFolder || activeFolder.type !== 'custom'}
+                title={capabilities.canManageFolders ? '删除文件夹' : capabilities.writeUnsupportedHint}
                 onClick={() => void handleFolderAction('delete')}
               >
                 <Trash2 className="h-4 w-4" />
@@ -1198,30 +1407,64 @@ export default function Workspace() {
               />
             </div>
             <Button variant="outline" onClick={() => void refreshEverything()} disabled={loadingMessages || busyAction !== ''}>
-              <RefreshCw className="mr-2 h-4 w-4" />
+              <RefreshCw className={cn('mr-2 h-4 w-4', loadingMessages && 'animate-spin')} />
               {t('refresh')}
             </Button>
-            <Button onClick={() => openCompose('new')}>
+            <Button
+              onClick={() => openCompose('new')}
+              disabled={!capabilities.canCompose || !activeMailbox}
+              title={capabilities.canCompose ? t('compose') : capabilities.writeUnsupportedHint}
+            >
               <FilePlus2 className="mr-2 h-4 w-4" />
               {t('compose')}
             </Button>
           </div>
 
+          {!capabilities.isGraph && activeMailbox ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200">
+              {capabilities.writeUnsupportedHint}
+            </div>
+          ) : null}
+
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant={filterUnread ? 'secondary' : 'ghost'} size="sm" onClick={() => setFilterUnread((current) => !current)}>
+            <Button
+              variant={filterUnread ? 'secondary' : 'ghost'}
+              size="sm"
+              onClick={() => {
+                setFilterUnread((current) => !current);
+                setPage(1);
+              }}
+            >
               {t('unread')}
             </Button>
-            <Button variant={filterStarred ? 'secondary' : 'ghost'} size="sm" onClick={() => setFilterStarred((current) => !current)}>
+            <Button
+              variant={filterStarred ? 'secondary' : 'ghost'}
+              size="sm"
+              onClick={() => {
+                setFilterStarred((current) => !current);
+                setPage(1);
+              }}
+            >
               {t('starred')}
             </Button>
             <Button
               variant={filterAttachment ? 'secondary' : 'ghost'}
               size="sm"
-              onClick={() => setFilterAttachment((current) => !current)}
+              onClick={() => {
+                setFilterAttachment((current) => !current);
+                setPage(1);
+              }}
             >
               {t('hasAttachment')}
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => setSortOrder((current) => (current === 'desc' ? 'asc' : 'desc'))}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setSortOrder((current) => (current === 'desc' ? 'asc' : 'desc'));
+                setPage(1);
+              }}
+            >
               {sortOrder === 'desc' ? t('dateDesc') : t('dateAsc')}
             </Button>
             <Button variant="ghost" size="sm" onClick={() => setSearchOpen(true)}>
@@ -1272,22 +1515,56 @@ export default function Workspace() {
             </div>
           ) : null}
 
-          {error ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div> : null}
+          {error ? (
+            <div className="flex items-start justify-between gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
+              <span className="min-w-0 flex-1 break-words">{error}</span>
+              <button type="button" className="shrink-0 text-red-400 hover:text-red-600" onClick={() => setError('')} aria-label="关闭错误">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          ) : null}
           {notice ? (
-            <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{notice}</div>
+            <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300">
+              {notice}
+            </div>
+          ) : null}
+          {latestJob ? (
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+              <span>同步：{latestJob.status}</span>
+              {latestJob.processed_messages != null ? <span>处理 {latestJob.processed_messages} 封</span> : null}
+              {latestJob.finished_at ? <span>完成于 {formatMailDate(latestJob.finished_at, 'MM-dd HH:mm')}</span> : null}
+            </div>
           ) : null}
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          {loadingMessages ? (
+        <div className="relative min-h-0 flex-1 overflow-y-auto">
+          {loadingMessages && messages.length === 0 ? (
             <div className="flex h-full items-center justify-center gap-2 text-sm text-slate-500">
               <LoaderCircle className="h-4 w-4 animate-spin" />
               {t('loading')}
             </div>
           ) : messages.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-sm text-slate-500">{t('noEmails')}</div>
+            <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-slate-500">
+              <Mail className="h-8 w-8 text-slate-300" />
+              <div>{t('noEmails')}</div>
+              {deferredSearchQuery || filterUnread || filterStarred || filterAttachment ? (
+                <button
+                  type="button"
+                  className="text-xs text-slate-700 underline underline-offset-2 dark:text-slate-200"
+                  onClick={() => {
+                    setSearchQuery('');
+                    setFilterUnread(false);
+                    setFilterStarred(false);
+                    setFilterAttachment(false);
+                    setPage(1);
+                  }}
+                >
+                  清除筛选条件
+                </button>
+              ) : null}
+            </div>
           ) : (
-            <div className="divide-y divide-slate-100 dark:divide-slate-800/70">
+            <div className={cn('divide-y divide-slate-100 dark:divide-slate-800/70', loadingMessages && 'opacity-60')}>
               {messages.map((message) => (
                 <div
                   key={message.id}
@@ -1314,7 +1591,7 @@ export default function Workspace() {
                       <div className="mb-1 flex items-center justify-between gap-3">
                         <span className="truncate text-sm text-slate-900 dark:text-slate-100">{message.sender}</span>
                         <span className="shrink-0 text-[11px] text-slate-500">
-                          {message.date ? format(new Date(message.date), 'MM-dd HH:mm') : '-'}
+                          {formatMailDate(message.date, 'MM-dd HH:mm')}
                         </span>
                       </div>
                       <div className="truncate text-sm text-slate-800 dark:text-slate-200">{message.subject}</div>
@@ -1323,9 +1600,9 @@ export default function Workspace() {
                         {message.is_flagged ? <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" /> : null}
                         {message.has_attachments ? <Paperclip className="h-3.5 w-3.5 text-slate-400" /> : null}
                         {message.importance === 'high' ? <AlertCircle className="h-3.5 w-3.5 text-red-500" /> : null}
-                        {message.meta.tags.length > 0 ? (
+                        {(message.meta?.tags?.length ?? 0) > 0 ? (
                           <Badge variant="outline" className="max-w-[9rem] truncate">
-                            {message.meta.tags.join(', ')}
+                            {message.meta?.tags?.join(', ')}
                           </Badge>
                         ) : null}
                       </div>
@@ -1348,17 +1625,27 @@ export default function Workspace() {
             {t('selectAll')}
           </label>
           <div className="flex items-center gap-2">
-            <span>
-              {t('page')} {listMeta.page || 1} {t('of')} {listMeta.total_pages || 1}
+            <span className="tabular-nums">
+              {listMeta.total > 0
+                ? `${t('page')} ${listMeta.page || 1}/${Math.max(listMeta.total_pages || 1, 1)} · ${listMeta.total} 封`
+                : `${t('page')} ${listMeta.page || 1}`}
             </span>
-            <Button variant="ghost" size="icon" className="h-7 w-7" disabled={!listMeta.has_prev} onClick={() => setPage((current) => Math.max(1, current - 1))}>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              disabled={!listMeta.has_prev || loadingMessages}
+              title="上一页"
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+            >
               <ChevronLeft className="h-4 w-4" />
             </Button>
             <Button
               variant="ghost"
               size="icon"
               className="h-7 w-7"
-              disabled={!listMeta.has_next}
+              disabled={!listMeta.has_next || loadingMessages}
+              title="下一页"
               onClick={() => setPage((current) => current + 1)}
             >
               <ChevronRight className="h-4 w-4" />
@@ -1381,19 +1668,43 @@ export default function Workspace() {
                   <ChevronLeft className="h-4 w-4" />
                 </Button>
                 {isDraftFolder(activeMessage, activeFolderId) ? (
-                  <Button variant="outline" size="sm" onClick={() => openDraftEditor(activeMessage)}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={!capabilities.canSaveDraft}
+                    title={capabilities.canSaveDraft ? '编辑草稿' : capabilities.writeUnsupportedHint}
+                    onClick={() => openDraftEditor(activeMessage)}
+                  >
                     编辑草稿
                   </Button>
                 ) : null}
-                <Button variant="ghost" size="sm" onClick={() => openCompose('reply', activeMessage)}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!capabilities.canReply}
+                  title={capabilities.canReply ? '回复' : capabilities.writeUnsupportedHint}
+                  onClick={() => openCompose('reply', activeMessage)}
+                >
                   <Reply className="mr-2 h-4 w-4" />
                   回复
                 </Button>
-                <Button variant="ghost" size="sm" onClick={() => openCompose('replyAll', activeMessage)}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!capabilities.canReply}
+                  title={capabilities.canReply ? '回复全部' : capabilities.writeUnsupportedHint}
+                  onClick={() => openCompose('replyAll', activeMessage)}
+                >
                   <ReplyAll className="mr-2 h-4 w-4" />
                   回复全部
                 </Button>
-                <Button variant="ghost" size="sm" onClick={() => openCompose('forward', activeMessage)}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!capabilities.canForward}
+                  title={capabilities.canForward ? '转发' : capabilities.writeUnsupportedHint}
+                  onClick={() => openCompose('forward', activeMessage)}
+                >
                   <Forward className="mr-2 h-4 w-4" />
                   转发
                 </Button>
@@ -1423,7 +1734,7 @@ export default function Workspace() {
                   <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-50">{activeMessage.subject}</h1>
                   <div className="flex items-center gap-1 text-sm text-slate-500">
                     <Clock className="h-3.5 w-3.5" />
-                    {activeMessage.date ? format(new Date(activeMessage.date), 'yyyy-MM-dd HH:mm') : '-'}
+                    {formatMailDate(activeMessage.date)}
                   </div>
                 </div>
                 <div className="space-y-1 text-sm text-slate-600 dark:text-slate-300">
@@ -1529,7 +1840,7 @@ export default function Workspace() {
                         />
                         <h3 className="text-sm font-semibold">标签 / 跟进 / 备注 / Snooze</h3>
                       </button>
-                      <Badge variant="outline">{activeMessage.meta.status || 'active'}</Badge>
+                      <Badge variant="outline">{activeMessage.meta?.status || 'active'}</Badge>
                     </div>
                     <div
                       id="workspace-meta-panel"

@@ -551,12 +551,25 @@ def create_app(
         messages = result.messages if hasattr(result, "messages") else result
         count = getattr(result, "returned", len(messages))
         mailbox_store.cache_messages(profile.id, query.method, _to_jsonable(messages))
+        serialized_messages = _to_jsonable(messages)
+        message_ids = [
+            str(item.get("message_id", ""))
+            for item in serialized_messages
+            if isinstance(item, dict) and item.get("message_id")
+        ]
+        meta_map = mailbox_store.list_message_meta_map(profile.id, query.method, message_ids) if message_ids else {}
+        for item in serialized_messages:
+            if not isinstance(item, dict):
+                continue
+            meta = meta_map.get(str(item.get("message_id", "")))
+            if meta is not None:
+                item["meta"] = _to_jsonable(meta)
         return jsonify(
             {
                 "mailbox": _to_jsonable(profile),
                 "method": query.method,
                 "folder": query.folder,
-                "messages": _to_jsonable(messages),
+                "messages": serialized_messages,
                 "count": count,
                 "meta": {
                     "total": getattr(result, "total", count),
@@ -610,8 +623,15 @@ def create_app(
         detail_request = _build_detail_request(payload, default_method=profile.preferred_method)
         config = _profile_to_config(profile, method=detail_request.method)
         message = mailbox_manager.get_message_detail(config, detail_request)
-        mailbox_store.cache_message(profile.id, detail_request.method, _to_jsonable(message))
-        return jsonify({"mailbox": _to_jsonable(profile), "message": _to_jsonable(message)})
+        serialized_message = _to_jsonable(message)
+        mailbox_store.cache_message(profile.id, detail_request.method, serialized_message)
+        if isinstance(serialized_message, dict):
+            message_id = str(serialized_message.get("message_id", "") or "")
+            if message_id:
+                meta = mailbox_store.get_message_meta(profile.id, detail_request.method, message_id)
+                if meta is not None:
+                    serialized_message["meta"] = _to_jsonable(meta)
+        return jsonify({"mailbox": _to_jsonable(profile), "message": serialized_message})
 
     @app.post("/api/key/mailbox/message")
     @api_key_required
@@ -1332,7 +1352,13 @@ def create_app(
                     status="failed",
                     details={"error": error_message, "method": method},
                 )
-                raise
+                results.append(
+                    {
+                        "mailbox": _to_jsonable(profile),
+                        "job": _to_jsonable(mailbox_store.get_sync_job(job.id)),
+                        "error": error_message,
+                    }
+                )
 
         return jsonify({"results": _to_jsonable(results), "count": len(results)})
 
