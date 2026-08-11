@@ -93,6 +93,19 @@ export default function Accounts() {
   const [error, setError] = useState('');
   const [importError, setImportError] = useState('');
   const [notice, setNotice] = useState('');
+  const [importProbeResults, setImportProbeResults] = useState<
+    Array<{
+      mailbox_id?: number;
+      email?: string;
+      label?: string;
+      success?: boolean;
+      adapted?: boolean;
+      preferred_method?: string;
+      original_method?: string;
+      message?: string;
+    }>
+  >([]);
+  const [importResultOpen, setImportResultOpen] = useState(false);
 
   const filteredAccounts = useMemo(
     () =>
@@ -190,6 +203,21 @@ export default function Accounts() {
       closeImportModal();
       const adapted = Number(result.summary.method_adapted ?? 0);
       const failed = Number(result.summary.method_failed ?? 0);
+      if (result.methodProbeResults.length > 0) {
+        setImportProbeResults(
+          result.methodProbeResults.map((item) => ({
+            mailbox_id: typeof item.mailbox_id === 'number' ? item.mailbox_id : undefined,
+            email: typeof item.email === 'string' ? item.email : '',
+            label: typeof item.label === 'string' ? item.label : '',
+            success: item.success === true,
+            adapted: item.adapted === true,
+            preferred_method: typeof item.preferred_method === 'string' ? item.preferred_method : '',
+            original_method: typeof item.original_method === 'string' ? item.original_method : '',
+            message: typeof item.message === 'string' ? item.message : '',
+          })),
+        );
+        setImportResultOpen(true);
+      }
       if (importForm.autoDetectMethod) {
         setNotice(
           adapted > 0 || failed > 0
@@ -716,6 +744,55 @@ export default function Accounts() {
                 </Button>
               </div>
             </form>
+          </div>
+        </div>
+      ) : null}
+
+      {importResultOpen ? (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6">
+          <div className="flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+              <div>
+                <h2 className="text-lg font-semibold">导入探测明细</h2>
+                <p className="mt-1 text-sm text-slate-500">每个账号的接入方式探测结果与最终采用方式</p>
+              </div>
+              <Button variant="outline" size="sm" onClick={() => setImportResultOpen(false)}>
+                关闭
+              </Button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="sticky top-0 border-b border-slate-200 bg-slate-50 text-xs uppercase text-slate-500 dark:border-slate-800 dark:bg-slate-900">
+                  <tr>
+                    <th className="p-3">邮箱</th>
+                    <th className="p-3">结果</th>
+                    <th className="p-3">原方式</th>
+                    <th className="p-3">最终方式</th>
+                    <th className="p-3">说明</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                  {importProbeResults.map((item, index) => (
+                    <tr key={`${item.mailbox_id ?? item.email ?? index}`}>
+                      <td className="p-3">
+                        <div className="font-medium">{item.email || '-'}</div>
+                        <div className="text-xs text-slate-500">{item.label || ''}</div>
+                      </td>
+                      <td className="p-3">
+                        {item.success ? (
+                          <span className="text-emerald-600">{item.adapted ? '已自适应' : '可用'}</span>
+                        ) : (
+                          <span className="text-red-600">失败</span>
+                        )}
+                      </td>
+                      <td className="p-3">{item.original_method || '-'}</td>
+                      <td className="p-3">{item.preferred_method || '-'}</td>
+                      <td className="max-w-xs break-words p-3 text-xs text-slate-500">{item.message || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       ) : null}

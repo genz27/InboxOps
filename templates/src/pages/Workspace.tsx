@@ -1,23 +1,30 @@
 import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   AlertCircle,
   Archive,
   ChevronLeft,
   ChevronRight,
   Clock,
+  Copy,
   Download,
   FilePlus2,
   FolderPen,
   FolderPlus,
   Forward,
+  Keyboard,
   LoaderCircle,
   Mail,
   MailOpen,
+  Menu,
   Paperclip,
+  Pin,
+  PinOff,
   RefreshCw,
   Reply,
   ReplyAll,
   Search,
+  Settings2,
   ShieldCheck,
   Star,
   Trash2,
@@ -28,6 +35,7 @@ import { useI18n } from '../i18n';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Badge } from '../components/ui/Badge';
+import { SafeHtml } from '../components/SafeHtml';
 import { cn } from '../lib/utils';
 import {
   type AuditLogRecord,
@@ -37,6 +45,7 @@ import {
   type SyncStatusRecord,
   applyRules,
   batchMessageAction,
+  batchTestConnections,
   createFolder,
   createRule,
   deleteFolder,
@@ -75,6 +84,18 @@ import {
   methodLabel,
   toDatetimeLocalValue,
 } from '../lib/mail';
+import {
+  ensureNotificationPermission,
+  getPinnedMailboxIds,
+  getRecentMailboxIds,
+  isOtpNotifyEnabled,
+  notifyVerificationCode,
+  setOtpNotifyEnabled,
+  sortMailboxesByPreference,
+  togglePinnedMailbox,
+  touchRecentMailbox,
+} from '../lib/preferences';
+import { isEditableTarget, resolveShortcut } from '../lib/shortcuts';
 import { useAppStore, type Email, type EmailAccount, type Folder, type MessageMeta, type MethodValue } from '../store/useAppStore';
 
 const ITEMS_PER_PAGE = 20;
@@ -240,6 +261,7 @@ function isDraftFolder(email: Email | null, folderId: string) {
 
 export default function Workspace() {
   const { t } = useI18n();
+  const navigate = useNavigate();
   const syncAccounts = useAppStore((state) => state.setAccounts);
   const syncActiveMailboxId = useAppStore((state) => state.setActiveMailboxId);
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
@@ -291,6 +313,14 @@ export default function Workspace() {
   const [mailboxQuery, setMailboxQuery] = useState('');
   const deferredMailboxQuery = useDeferredValue(mailboxQuery);
   const [copiedCode, setCopiedCode] = useState('');
+  const [pinnedIds, setPinnedIds] = useState<string[]>(() => getPinnedMailboxIds());
+  const [recentIds, setRecentIds] = useState<string[]>(() => getRecentMailboxIds());
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [otpNotifyEnabled, setOtpNotifyEnabledState] = useState(() => isOtpNotifyEnabled());
+  const [accountActionBusy, setAccountActionBusy] = useState('');
+  const listSearchRef = useRef<HTMLInputElement | null>(null);
+  const seenMessageIdsRef = useRef<Set<string>>(new Set());
   const messagesRequestIdRef = useRef(0);
   const detailRequestIdRef = useRef(0);
   const foldersRequestIdRef = useRef(0);
@@ -308,10 +338,10 @@ export default function Workspace() {
   const allVisibleSelected = messages.length > 0 && messages.every((message) => selectedMessageIds.includes(message.id));
   const syncStatus = syncItems[0] ?? null;
   const latestJob = syncStatus?.jobs?.[0] ?? null;
-  const filteredAccounts = useMemo(
-    () => accounts.filter((account) => accountMatchesQuery(account, deferredMailboxQuery)),
-    [accounts, deferredMailboxQuery],
-  );
+  const filteredAccounts = useMemo(() => {
+    const matched = accounts.filter((account) => accountMatchesQuery(account, deferredMailboxQuery));
+    return sortMailboxesByPreference(matched, pinnedIds, recentIds);
+  }, [accounts, deferredMailboxQuery, pinnedIds, recentIds]);
   const verificationCodes = useMemo(
     () =>
       extractVerificationCodes(
@@ -383,7 +413,11 @@ export default function Workspace() {
         if (items.some((item) => item.id === current)) {
           return current;
         }
-        return items[0]?.id ?? '';
+        const firstId = items[0]?.id ?? '';
+        if (firstId) {
+          setRecentIds(touchRecentMailbox(firstId));
+        }
+        return firstId;
       });
       if (items.length === 0) {
         setFolders([]);
@@ -415,6 +449,21 @@ export default function Workspace() {
         }
         return items.find((item) => item.type === 'inbox')?.id ?? items[0]?.id ?? 'INBOX';
       });
+      const inbox = items.find((item) => item.type === 'inbox') ?? items[0];
+      if (inbox) {
+        setAccounts((current) =>
+          current.map((account) =>
+            account.id === mailboxId
+              ? {
+                  ...account,
+                  unreadCount: inbox.unreadCount,
+                  totalCount: inbox.totalCount,
+                  lastSyncAt: new Date().toISOString(),
+                }
+              : account,
+          ),
+        );
+      }
     } catch (requestError) {
       if (foldersRequestIdRef.current !== requestId) {
         return;
@@ -459,6 +508,28 @@ export default function Workspace() {
       if (messagesRequestIdRef.current !== requestId) {
         return;
       }
+      // 静默刷新时识别新验证码邮件并通知
+      if (silent) {
+        for (const item of response.items) {
+          if (seenMessageIdsRef.current.has(item.id)) {
+            continue;
+          }
+          seenMessageIdsRef.current.add(item.id);
+          const codes = extractVerificationCodes(item.subject, item.preview, item.body_text);
+          if (codes[0]) {
+            notifyVerificationCode({
+              title: `验证码 · ${item.subject || '新邮件'}`,
+              body: `检测到验证码 ${codes[0]}（${item.sender || '未知发件人'}）`,
+              code: codes[0],
+            });
+          }
+        }
+      } else {
+        for (const item of response.items) {
+          seenMessageIdsRef.current.add(item.id);
+        }
+      }
+
       setMessages(response.items);
       setListMeta(response.meta);
       setSelectedMessageIds((current) => current.filter((item) => response.items.some((message) => message.id === item)));
@@ -610,7 +681,7 @@ export default function Workspace() {
     void loadAccounts();
   }, []);
 
-  // Esc 关闭详情（移动端从列表进详情后的返回手势补充）
+  // Esc / 邮件快捷键
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -630,15 +701,97 @@ export default function Workspace() {
           setOpsOpen(false);
           return;
         }
+        if (shortcutsOpen) {
+          setShortcutsOpen(false);
+          return;
+        }
+        if (mobileNavOpen) {
+          setMobileNavOpen(false);
+          return;
+        }
         if (activeMessageId) {
           setActiveMessageId('');
           setActiveMessage(null);
+        }
+        return;
+      }
+
+      if (isEditableTarget(event.target) || compose.open || searchOpen || rulesOpen || opsOpen) {
+        return;
+      }
+
+      const action = resolveShortcut(event);
+      if (!action) {
+        return;
+      }
+      event.preventDefault();
+
+      if (action === 'focusSearch') {
+        listSearchRef.current?.focus();
+        return;
+      }
+      if (action === 'compose') {
+        openCompose('new');
+        return;
+      }
+      if (action === 'refresh') {
+        void refreshEverything();
+        return;
+      }
+      if (action === 'toggleUnreadFilter') {
+        setFilterUnread((current) => !current);
+        setPage(1);
+        return;
+      }
+      if (action === 'copyOtp') {
+        const code = verificationCodes[0];
+        if (code) {
+          void handleCopyVerificationCode(code);
+        }
+        return;
+      }
+      if (action === 'archive' && activeMessage) {
+        void handleBatchAction('archive', [activeMessage.id]);
+        return;
+      }
+      if (action === 'nextMessage' || action === 'prevMessage') {
+        if (messages.length === 0) {
+          return;
+        }
+        const currentIndex = Math.max(
+          0,
+          messages.findIndex((item) => item.id === activeMessageId),
+        );
+        const nextIndex =
+          action === 'nextMessage'
+            ? Math.min(messages.length - 1, (activeMessageId ? currentIndex : -1) + 1)
+            : Math.max(0, (activeMessageId ? currentIndex : 0) - 1);
+        const target = messages[nextIndex];
+        if (target) {
+          void loadMessageDetail(target.id, target.folderId, target);
         }
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [compose.open, searchOpen, rulesOpen, opsOpen, activeMessageId]);
+  }, [
+    compose.open,
+    searchOpen,
+    rulesOpen,
+    opsOpen,
+    shortcutsOpen,
+    mobileNavOpen,
+    activeMessageId,
+    activeMessage,
+    messages,
+    verificationCodes,
+  ]);
+
+  useEffect(() => {
+    if (otpNotifyEnabled) {
+      void ensureNotificationPermission();
+    }
+  }, [otpNotifyEnabled]);
 
   useEffect(() => {
     if (!activeMailbox) {
@@ -764,6 +917,183 @@ export default function Workspace() {
     } catch {
       updateError(new Error('复制失败'), '复制验证码失败');
     }
+  }
+
+  function selectMailbox(accountId: string) {
+    if (accountId === activeMailboxId) {
+      setMobileNavOpen(false);
+      return;
+    }
+    messagesRequestIdRef.current += 1;
+    detailRequestIdRef.current += 1;
+    foldersRequestIdRef.current += 1;
+    seenMessageIdsRef.current = new Set();
+    setActiveMailboxId(accountId);
+    setRecentIds(touchRecentMailbox(accountId));
+    setFolders([]);
+    setActiveFolderId('');
+    setMessages([]);
+    setListMeta(EMPTY_PAGINATION);
+    setPage(1);
+    setSelectedMessageIds([]);
+    setActiveMessageId('');
+    setActiveMessage(null);
+    setThreadItems([]);
+    setError('');
+    setMobileNavOpen(false);
+  }
+
+  function handleTogglePin(accountId: string, event?: React.MouseEvent) {
+    event?.stopPropagation();
+    setPinnedIds(togglePinnedMailbox(accountId));
+  }
+
+  async function handleCopyAccountEmail(email: string, event?: React.MouseEvent) {
+    event?.stopPropagation();
+    try {
+      await copyText(email);
+      updateNotice(`已复制邮箱：${email}`);
+    } catch {
+      updateError(new Error('复制失败'), '复制邮箱失败');
+    }
+  }
+
+  async function handleTestAccount(accountId: string, event?: React.MouseEvent) {
+    event?.stopPropagation();
+    setAccountActionBusy(`test-${accountId}`);
+    try {
+      const payload = await batchTestConnections([accountId]);
+      const first = payload.results[0];
+      const ok = first?.success === true;
+      setAccounts((current) =>
+        current.map((account) =>
+          account.id === accountId
+            ? { ...account, status: ok ? 'connected' : 'disconnected', lastError: ok ? '' : String(first?.message || '') }
+            : account,
+        ),
+      );
+      updateNotice(ok ? '连接测试成功' : `连接失败：${String(first?.message || '未知错误')}`);
+    } catch (requestError) {
+      updateError(requestError, '连接测试失败');
+    } finally {
+      setAccountActionBusy('');
+    }
+  }
+
+  function renderMailboxList() {
+    if (loadingAccounts) {
+      return (
+        <div className="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-slate-500">
+          <LoaderCircle className="h-4 w-4 animate-spin" />
+          {t('loading')}
+        </div>
+      );
+    }
+    if (accounts.length === 0) {
+      return (
+        <div className="rounded-md border border-dashed border-slate-200 px-3 py-4 text-sm text-slate-500 dark:border-slate-800">
+          暂无邮箱档案
+        </div>
+      );
+    }
+    if (filteredAccounts.length === 0) {
+      return (
+        <div className="rounded-md border border-dashed border-slate-200 px-3 py-4 text-sm text-slate-500 dark:border-slate-800">
+          无匹配邮箱
+        </div>
+      );
+    }
+
+    return filteredAccounts.map((account) => {
+      const pinned = pinnedIds.includes(account.id);
+      return (
+        <div
+          key={account.id}
+          className={cn(
+            'group rounded-lg border px-2 py-2 transition-colors',
+            activeMailboxId === account.id
+              ? 'border-slate-900 bg-white shadow-sm dark:border-slate-200 dark:bg-slate-950'
+              : 'border-transparent hover:bg-white dark:hover:bg-slate-950',
+          )}
+        >
+          <button type="button" onClick={() => selectMailbox(account.id)} className="w-full text-left">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  {pinned ? <Pin className="h-3 w-3 shrink-0 text-amber-500" /> : null}
+                  <div className="truncate text-sm font-medium">{account.label || account.email}</div>
+                </div>
+                <div className="truncate text-xs text-slate-500">{account.email}</div>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                {(account.unreadCount ?? 0) > 0 ? (
+                  <Badge variant="secondary" className="h-5 min-w-5 justify-center px-1 text-[10px]">
+                    {account.unreadCount}
+                  </Badge>
+                ) : null}
+                <div
+                  className={cn(
+                    'h-2.5 w-2.5 rounded-full',
+                    account.status === 'connected'
+                      ? 'bg-emerald-500'
+                      : account.status === 'disconnected'
+                        ? 'bg-red-500'
+                        : 'bg-slate-300',
+                  )}
+                />
+              </div>
+            </div>
+            <div className="mt-1.5 text-[11px] text-slate-500">{methodLabel(account.preferredMethod)}</div>
+          </button>
+          <div className="mt-2 hidden flex-wrap gap-1 group-hover:flex">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-[11px]"
+              onClick={(event) => handleTogglePin(account.id, event)}
+              title={pinned ? '取消置顶' : '置顶'}
+            >
+              {pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-[11px]"
+              onClick={(event) => void handleCopyAccountEmail(account.email, event)}
+              title="复制邮箱"
+            >
+              <Copy className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-[11px]"
+              disabled={accountActionBusy === `test-${account.id}`}
+              onClick={(event) => void handleTestAccount(account.id, event)}
+              title="测试连接"
+            >
+              {accountActionBusy === `test-${account.id}` ? (
+                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5" />
+              )}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-[11px]"
+              onClick={(event) => {
+                event.stopPropagation();
+                navigate('/accounts');
+              }}
+              title="账号管理"
+            >
+              <Settings2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        </div>
+      );
+    });
   }
 
   function updateError(requestError: unknown, fallback: string) {
@@ -1265,9 +1595,8 @@ export default function Workspace() {
     }
   }
 
-  return (
-    <div className="flex h-full w-full overflow-hidden bg-white dark:bg-slate-950">
-      <div className="hidden w-72 shrink-0 overflow-hidden border-r border-slate-200 bg-slate-50/80 dark:border-slate-800 dark:bg-slate-900/50 lg:flex lg:flex-col">
+  const mailboxSidebar = (
+        <>
         <div
           className={cn(
             'flex flex-col overflow-hidden p-4',
@@ -1278,10 +1607,28 @@ export default function Workspace() {
         >
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">邮箱档案</h2>
-            <Badge variant="outline">
-              {filteredAccounts.length}
-              {deferredMailboxQuery.trim() ? `/${accounts.length}` : ''}
-            </Badge>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                title={otpNotifyEnabled ? '关闭验证码通知' : '开启验证码通知'}
+                onClick={() => {
+                  const next = !otpNotifyEnabled;
+                  setOtpNotifyEnabledState(next);
+                  setOtpNotifyEnabled(next);
+                  if (next) {
+                    void ensureNotificationPermission();
+                  }
+                }}
+              >
+                <ShieldCheck className={cn('h-3.5 w-3.5', otpNotifyEnabled ? 'text-emerald-500' : 'text-slate-400')} />
+              </Button>
+              <Badge variant="outline">
+                {filteredAccounts.length}
+                {deferredMailboxQuery.trim() ? `/${accounts.length}` : ''}
+              </Badge>
+            </div>
           </div>
           <div className="relative mb-2">
             <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
@@ -1302,72 +1649,7 @@ export default function Workspace() {
               </button>
             ) : null}
           </div>
-          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
-            {loadingAccounts ? (
-              <div className="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-slate-500">
-                <LoaderCircle className="h-4 w-4 animate-spin" />
-                {t('loading')}
-              </div>
-            ) : accounts.length === 0 ? (
-              <div className="rounded-md border border-dashed border-slate-200 px-3 py-4 text-sm text-slate-500 dark:border-slate-800">
-                暂无邮箱档案
-              </div>
-            ) : filteredAccounts.length === 0 ? (
-              <div className="rounded-md border border-dashed border-slate-200 px-3 py-4 text-sm text-slate-500 dark:border-slate-800">
-                无匹配邮箱
-              </div>
-            ) : (
-              filteredAccounts.map((account) => (
-                <button
-                  key={account.id}
-                  onClick={() => {
-                    if (account.id === activeMailboxId) {
-                      return;
-                    }
-                    // 先清空文件夹，避免新邮箱仍用旧 folderId 发起错误请求
-                    messagesRequestIdRef.current += 1;
-                    detailRequestIdRef.current += 1;
-                    foldersRequestIdRef.current += 1;
-                    setActiveMailboxId(account.id);
-                    setFolders([]);
-                    setActiveFolderId('');
-                    setMessages([]);
-                    setListMeta(EMPTY_PAGINATION);
-                    setPage(1);
-                    setSelectedMessageIds([]);
-                    setActiveMessageId('');
-                    setActiveMessage(null);
-                    setThreadItems([]);
-                    setError('');
-                  }}
-                  className={cn(
-                    'w-full rounded-lg border px-3 py-2 text-left transition-colors',
-                    activeMailboxId === account.id
-                      ? 'border-slate-900 bg-white text-slate-900 shadow-sm dark:border-slate-200 dark:bg-slate-950 dark:text-slate-50'
-                      : 'border-transparent hover:bg-white dark:hover:bg-slate-950',
-                  )}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium">{account.label || account.email}</div>
-                      <div className="truncate text-xs text-slate-500">{account.email}</div>
-                    </div>
-                    <div
-                      className={cn(
-                        'h-2.5 w-2.5 shrink-0 rounded-full',
-                        account.status === 'connected'
-                          ? 'bg-emerald-500'
-                          : account.status === 'disconnected'
-                            ? 'bg-red-500'
-                            : 'bg-slate-300',
-                      )}
-                    />
-                  </div>
-                  <div className="mt-2 text-[11px] text-slate-500">{methodLabel(account.preferredMethod)}</div>
-                </button>
-              ))
-            )}
-          </div>
+          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">{renderMailboxList()}</div>
         </div>
 
         <div
@@ -1448,6 +1730,7 @@ export default function Workspace() {
                         setActiveFolderId(folder.id);
                         setPage(1);
                         setSelectedMessageIds([]);
+                        setMobileNavOpen(false);
                       }}
                       className={cn(
                         'flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-sm transition-colors',
@@ -1465,7 +1748,31 @@ export default function Workspace() {
             </div>
           </div>
         </div>
+        </>
+      );
+
+      return (
+    <div className="relative flex h-full w-full overflow-hidden bg-white dark:bg-slate-950">
+      {/* 桌面侧边栏 */}
+      <div className="hidden w-72 shrink-0 overflow-hidden border-r border-slate-200 bg-slate-50/80 dark:border-slate-800 dark:bg-slate-900/50 lg:flex lg:flex-col">
+        {mailboxSidebar}
       </div>
+
+      {/* 移动端抽屉 */}
+      {mobileNavOpen ? (
+        <div className="absolute inset-0 z-40 flex lg:hidden">
+          <button type="button" className="absolute inset-0 bg-black/40" onClick={() => setMobileNavOpen(false)} aria-label="关闭侧栏" />
+          <div className="relative z-10 flex h-full w-[18rem] max-w-[85vw] flex-col overflow-hidden border-r border-slate-200 bg-slate-50 shadow-xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2 dark:border-slate-800">
+              <span className="text-sm font-semibold">邮箱与文件夹</span>
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setMobileNavOpen(false)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{mailboxSidebar}</div>
+          </div>
+        </div>
+      ) : null}
 
       <div
         className={cn(
@@ -1475,15 +1782,19 @@ export default function Workspace() {
       >
         <div className="space-y-3 border-b border-slate-200 p-3 dark:border-slate-800">
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative min-w-[220px] flex-1">
+            <Button variant="outline" size="icon" className="h-9 w-9 lg:hidden" onClick={() => setMobileNavOpen(true)} title="打开邮箱列表">
+              <Menu className="h-4 w-4" />
+            </Button>
+            <div className="relative min-w-[180px] flex-1">
               <Search className="absolute left-2.5 top-2 h-4 w-4 text-slate-400" />
               <Input
+                ref={listSearchRef}
                 value={searchQuery}
                 onChange={(event) => {
                   setSearchQuery(event.target.value);
                   setPage(1);
                 }}
-                placeholder={t('search')}
+                placeholder={`${t('search')}  (/)`}
                 className="pl-8"
               />
             </div>
@@ -1494,10 +1805,13 @@ export default function Workspace() {
             <Button
               onClick={() => openCompose('new')}
               disabled={!capabilities.canCompose || !activeMailbox}
-              title={capabilities.canCompose ? t('compose') : capabilities.writeUnsupportedHint}
+              title={capabilities.canCompose ? `${t('compose')} (n)` : capabilities.writeUnsupportedHint}
             >
               <FilePlus2 className="mr-2 h-4 w-4" />
               {t('compose')}
+            </Button>
+            <Button variant="ghost" size="icon" className="h-9 w-9" title="快捷键帮助" onClick={() => setShortcutsOpen(true)}>
+              <Keyboard className="h-4 w-4" />
             </Button>
           </div>
 
@@ -1883,7 +2197,7 @@ export default function Workspace() {
 
                   {viewMode === 'html' ? (
                     activeMessage.body_html ? (
-                      <div className="prose prose-sm max-w-none dark:prose-invert" dangerouslySetInnerHTML={{ __html: activeMessage.body_html }} />
+                      <SafeHtml html={activeMessage.body_html} minHeight={320} />
                     ) : (
                       <pre className="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{activeMessage.body_text}</pre>
                     )
@@ -2080,8 +2394,9 @@ export default function Workspace() {
       </div>
 
       {compose.open ? (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6">
-          <div className="flex max-h-full w-full max-w-4xl flex-col rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-900">
+        <div className="absolute inset-0 z-50 flex justify-end bg-black/35">
+          <button type="button" className="h-full flex-1 cursor-default" onClick={() => setCompose(EMPTY_COMPOSE)} aria-label="关闭写信面板" />
+          <div className="flex h-full w-full max-w-xl flex-col border-l border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900">
             <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
               <div>
                 <h2 className="text-lg font-semibold">
@@ -2131,8 +2446,8 @@ export default function Workspace() {
                 </div>
               </div>
             </div>
-            <div className="flex items-center justify-between border-t border-slate-200 px-5 py-4 dark:border-slate-800">
-              <div className="text-xs text-slate-500">草稿保存支持继续编辑；回复、回复全部、转发也可以先保存草稿。</div>
+            <div className="flex items-center justify-between gap-3 border-t border-slate-200 px-5 py-4 dark:border-slate-800">
+              <div className="text-xs text-slate-500">侧滑写信面板 · 支持草稿与回复</div>
               <div className="flex items-center gap-2">
                 <Button variant="outline" onClick={() => void submitCompose(false)} disabled={compose.submitting}>
                   {compose.submitting ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
@@ -2143,6 +2458,36 @@ export default function Workspace() {
                   发送
                 </Button>
               </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {shortcutsOpen ? (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6">
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">键盘快捷键</h2>
+              <Button variant="ghost" size="icon" onClick={() => setShortcutsOpen(false)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="space-y-2 text-sm text-slate-600 dark:text-slate-300">
+              {[
+                ['j / k', '下一封 / 上一封'],
+                ['c', '复制验证码'],
+                ['e', '归档当前邮件'],
+                ['/', '聚焦列表搜索'],
+                ['n', '写新邮件'],
+                ['r', '刷新'],
+                ['u', '切换未读筛选'],
+                ['Esc', '关闭面板 / 返回列表'],
+              ].map(([key, desc]) => (
+                <div key={key} className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-800">
+                  <span>{desc}</span>
+                  <kbd className="rounded bg-slate-100 px-2 py-0.5 font-mono text-xs dark:bg-slate-800">{key}</kbd>
+                </div>
+              ))}
             </div>
           </div>
         </div>
