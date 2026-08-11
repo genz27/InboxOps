@@ -283,6 +283,11 @@ def create_app(
         payload = request.get_json(silent=True) or {}
         raw_text = _require_text(payload, "raw_text", "批量导入文本不能为空")
         preferred_method = _normalize_method(payload.get("preferred_method") or "graph_api")
+        auto_detect_method = _parse_bool(
+            payload.get("auto_detect_method"),
+            field_name="auto_detect_method",
+            default=False,
+        )
         parsed_payloads = _parse_import_mailboxes(
             raw_text,
             preferred_method=preferred_method,
@@ -296,7 +301,29 @@ def create_app(
         summary, mailboxes = mailbox_store.import_mailboxes(
             hydrated_payloads
         )
-        return jsonify({"summary": summary, "mailboxes": _to_jsonable(mailboxes)})
+
+        method_probe_results: list[dict[str, Any]] = []
+        if auto_detect_method and mailboxes:
+            method_probe_results = _auto_detect_mailbox_methods(mailbox_manager, mailbox_store, mailboxes)
+            # 重新读取已更新 preferred_method 的档案
+            mailboxes = [
+                mailbox_store.get_mailbox(item.id) or item
+                for item in mailboxes
+            ]
+            summary = {
+                **summary,
+                "auto_detect_method": True,
+                "method_adapted": sum(1 for item in method_probe_results if item.get("adapted")),
+                "method_failed": sum(1 for item in method_probe_results if not item.get("success")),
+            }
+
+        return jsonify(
+            {
+                "summary": summary,
+                "mailboxes": _to_jsonable(mailboxes),
+                "method_probe_results": method_probe_results,
+            }
+        )
 
     @app.get("/api/mailboxes/<int:mailbox_id>")
     @auth_required
@@ -2460,6 +2487,57 @@ def _probe_mailbox_connection(
     if not latest_subject and isinstance(latest_message, dict):
         latest_subject = str(latest_message.get("subject", ""))
     return "连接成功，收件箱暂无邮件" if not latest_subject else f"连接成功，最近邮件：{latest_subject}"
+
+
+def _auto_detect_mailbox_methods(
+    manager: MailboxManager,
+    store: MailboxStore,
+    mailboxes: list[MailboxProfile],
+) -> list[dict[str, Any]]:
+    """导入后按 graph → imap_new → imap_old 探测，写入第一个可用方式。"""
+    probe_order = ("graph_api", "imap_new", "imap_old")
+    results: list[dict[str, Any]] = []
+
+    for profile in mailboxes:
+        original_method = profile.preferred_method
+        adapted_method = ""
+        success = False
+        message = "未找到可用接入方式"
+        attempts: list[dict[str, Any]] = []
+
+        for method in probe_order:
+            try:
+                probe_message = _probe_mailbox_connection(
+                    manager,
+                    config=_profile_to_config(profile, method=method),
+                    method=method,
+                )
+                attempts.append({"method": method, "success": True, "message": probe_message})
+                adapted_method = method
+                success = True
+                message = probe_message
+                break
+            except Exception as exc:  # noqa: BLE001
+                attempts.append({"method": method, "success": False, "message": str(exc)})
+
+        if success and adapted_method and adapted_method != original_method:
+            profile = store.update_mailbox(profile.id, {"preferred_method": adapted_method})
+
+        results.append(
+            {
+                "mailbox_id": profile.id,
+                "email": profile.email,
+                "label": profile.label,
+                "success": success,
+                "adapted": bool(success and adapted_method != original_method),
+                "preferred_method": profile.preferred_method,
+                "original_method": original_method,
+                "message": message,
+                "attempts": attempts,
+            }
+        )
+
+    return results
 
 
 def _serve_frontend_index(frontend_index_file: Path, frontend_dist_dir: Path) -> Any:

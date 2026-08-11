@@ -43,6 +43,7 @@ interface AccountFormState {
 interface ImportFormState {
   rawText: string;
   preferredMethod: MethodValue;
+  autoDetectMethod: boolean;
 }
 
 const DEFAULT_FORM: AccountFormState = {
@@ -60,6 +61,7 @@ const DEFAULT_FORM: AccountFormState = {
 const DEFAULT_IMPORT_FORM: ImportFormState = {
   rawText: '',
   preferredMethod: 'graph_api',
+  autoDetectMethod: true,
 };
 
 const METHOD_OPTIONS: Array<{ value: MethodValue; label: string }> = [
@@ -181,10 +183,22 @@ export default function Accounts() {
     setError('');
     setImportError('');
     try {
-      await importMailboxes(rawText, importForm.preferredMethod);
+      const result = await importMailboxes(rawText, importForm.preferredMethod, {
+        autoDetectMethod: importForm.autoDetectMethod,
+      });
       await loadAccounts();
       closeImportModal();
-      window.alert(t('importSuccess'));
+      const adapted = Number(result.summary.method_adapted ?? 0);
+      const failed = Number(result.summary.method_failed ?? 0);
+      if (importForm.autoDetectMethod) {
+        setNotice(
+          adapted > 0 || failed > 0
+            ? `导入完成。已自适应 ${adapted} 个接入方式${failed > 0 ? `，${failed} 个探测失败（保留默认方式）` : ''}。`
+            : t('importSuccess'),
+        );
+      } else {
+        setNotice(t('importSuccess'));
+      }
     } catch (requestError) {
       setImportError(requestError instanceof Error ? requestError.message : t('importFailed'));
     } finally {
@@ -626,24 +640,46 @@ export default function Accounts() {
             </div>
             <form onSubmit={handleImport} className="flex min-h-0 flex-1 flex-col">
               <div className="min-h-0 space-y-4 overflow-y-auto px-6 py-5">
-                <div>
-                  <label className="mb-1 block text-sm font-medium">{t('defaultMethod')}</label>
-                  <select
-                    className="flex h-9 w-full rounded-md border border-slate-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors dark:border-slate-800"
-                    value={importForm.preferredMethod}
-                    onChange={(event) =>
-                      setImportForm((current) => ({
-                        ...current,
-                        preferredMethod: event.target.value as MethodValue,
-                      }))
-                    }
-                  >
-                    {METHOD_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-sm font-medium">{t('defaultMethod')}</label>
+                    <select
+                      className="flex h-9 w-full rounded-md border border-slate-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors dark:border-slate-800"
+                      value={importForm.preferredMethod}
+                      onChange={(event) =>
+                        setImportForm((current) => ({
+                          ...current,
+                          preferredMethod: event.target.value as MethodValue,
+                        }))
+                      }
+                      disabled={importForm.autoDetectMethod}
+                    >
+                      {METHOD_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <label className="flex items-end gap-2 pb-1 text-sm text-slate-700 dark:text-slate-200">
+                    <input
+                      type="checkbox"
+                      className="rounded border-slate-300"
+                      checked={importForm.autoDetectMethod}
+                      onChange={(event) =>
+                        setImportForm((current) => ({
+                          ...current,
+                          autoDetectMethod: event.target.checked,
+                        }))
+                      }
+                    />
+                    <span>
+                      导入后自动探测可用接入方式
+                      <span className="mt-0.5 block text-xs text-slate-500">
+                        顺序：Graph → 新版 IMAP → 旧版 IMAP
+                      </span>
+                    </span>
+                  </label>
                 </div>
 
                 <div>

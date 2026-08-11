@@ -139,6 +139,83 @@ export function emptyMeta(): MessageMeta {
   };
 }
 
+/** 从邮件正文/预览中提取验证码（优先带标签的匹配） */
+export function extractVerificationCodes(...parts: Array<string | null | undefined>): string[] {
+  const text = parts.filter(Boolean).join('\n');
+  if (!text.trim()) {
+    return [];
+  }
+
+  const found: string[] = [];
+  const seen = new Set<string>();
+  const push = (value: string) => {
+    const code = value.trim();
+    if (!code || seen.has(code)) {
+      return;
+    }
+    // 过滤明显不是验证码的数字（年份、过短/过长已由正则控制）
+    if (/^(19|20)\d{2}$/.test(code)) {
+      return;
+    }
+    seen.add(code);
+    found.push(code);
+  };
+
+  const labeledPatterns = [
+    /(?:验证码|校验码|动态码|安全码|确认码|登录码|otp|pin|code|verification(?:\s+code)?|security(?:\s+code)?|passcode)[^\dA-Za-z]{0,16}([A-Z0-9]{4,8})/gi,
+    /([A-Z0-9]{4,8})[^\dA-Za-z]{0,12}(?:验证码|校验码|is your (?:code|otp)|verification code)/gi,
+    /(?:G-|C-)?(\d{4,8})(?:\s+is your (?:Microsoft|Google|Apple|Amazon)?\s*code)/gi,
+  ];
+
+  for (const pattern of labeledPatterns) {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      push(match[1]);
+    }
+  }
+
+  // 未命中标签时，仅在验证语境下收集 6 位数字
+  if (found.length === 0 && /验证码|校验码|verification|otp|one[-\s]?time|security code/i.test(text)) {
+    const sixDigit = text.match(/\b(\d{6})\b/g) ?? [];
+    for (const item of sixDigit) {
+      push(item);
+    }
+  }
+
+  return found.slice(0, 5);
+}
+
+export async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  const ok = document.execCommand('copy');
+  textarea.remove();
+  if (!ok) {
+    throw new Error('copy_failed');
+  }
+}
+
+export function accountMatchesQuery(account: EmailAccount, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) {
+    return true;
+  }
+  return [account.label, account.email, account.notes, account.remark]
+    .filter(Boolean)
+    .some((value) => String(value).toLowerCase().includes(needle));
+}
+
 export function mapMailboxToAccount(mailbox: MailboxSummary | MailboxProfile): EmailAccount {
   const method = normalizeMethod(mailbox.preferred_method || mailbox.method);
   const notes = mailbox.notes || mailbox.remark || '';

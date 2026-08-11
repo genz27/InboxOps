@@ -65,7 +65,10 @@ import {
   updateRule,
 } from '../lib/api';
 import {
+  accountMatchesQuery,
+  copyText,
   emptyMeta,
+  extractVerificationCodes,
   fileToAttachmentPayload,
   fromDatetimeLocalValue,
   methodCapabilities,
@@ -285,6 +288,9 @@ export default function Workspace() {
   const [opsOpen, setOpsOpen] = useState(false);
   const [ruleEditor, setRuleEditor] = useState<RuleEditorState>(EMPTY_RULE_EDITOR);
   const [pendingFocus, setPendingFocus] = useState<PendingFocus | null>(null);
+  const [mailboxQuery, setMailboxQuery] = useState('');
+  const deferredMailboxQuery = useDeferredValue(mailboxQuery);
+  const [copiedCode, setCopiedCode] = useState('');
   const messagesRequestIdRef = useRef(0);
   const detailRequestIdRef = useRef(0);
   const foldersRequestIdRef = useRef(0);
@@ -302,6 +308,20 @@ export default function Workspace() {
   const allVisibleSelected = messages.length > 0 && messages.every((message) => selectedMessageIds.includes(message.id));
   const syncStatus = syncItems[0] ?? null;
   const latestJob = syncStatus?.jobs?.[0] ?? null;
+  const filteredAccounts = useMemo(
+    () => accounts.filter((account) => accountMatchesQuery(account, deferredMailboxQuery)),
+    [accounts, deferredMailboxQuery],
+  );
+  const verificationCodes = useMemo(
+    () =>
+      extractVerificationCodes(
+        activeMessage?.subject,
+        activeMessage?.preview,
+        activeMessage?.body_text,
+        activeMessage?.body_html ? activeMessage.body_html.replace(/<[^>]+>/g, ' ') : '',
+      ),
+    [activeMessage],
+  );
 
   useEffect(() => {
     loadingMessagesRef.current = loadingMessages;
@@ -447,6 +467,24 @@ export default function Workspace() {
         setActiveMessage(null);
         setThreadItems([]);
       }
+      // 预取下一页，翻页更顺滑
+      if (response.meta.has_next && !silent) {
+        const prefetchPage = response.meta.page + 1;
+        void listMessages({
+          mailboxId: requestMailboxId,
+          method: requestMethod,
+          folder: requestFolderId,
+          page: prefetchPage,
+          pageSize: ITEMS_PER_PAGE,
+          keyword: deferredSearchQuery,
+          unreadOnly: filterUnread,
+          flaggedOnly: filterStarred,
+          hasAttachmentsOnly: filterAttachment,
+          sortOrder,
+        }).catch(() => {
+          // 预取失败忽略
+        });
+      }
     } catch (requestError) {
       if (messagesRequestIdRef.current !== requestId) {
         return;
@@ -463,7 +501,7 @@ export default function Workspace() {
     }
   }
 
-  async function loadMessageDetail(messageId: string, folderId = activeFolderId) {
+  async function loadMessageDetail(messageId: string, folderId = activeFolderId, preview?: Email | null) {
     if (!activeMailbox || !messageId) {
       return;
     }
@@ -472,6 +510,10 @@ export default function Workspace() {
     const requestMailboxId = activeMailbox.id;
     const requestMethod = activeMethod;
     setActiveMessageId(messageId);
+    // 先展示列表摘要，减少空白等待
+    if (preview && preview.id === messageId) {
+      setActiveMessage(preview);
+    }
     setLoadingDetail(true);
     setError('');
     try {
@@ -709,6 +751,19 @@ export default function Workspace() {
   function updateNotice(message: string) {
     setNotice(message);
     setError('');
+  }
+
+  async function handleCopyVerificationCode(code: string) {
+    try {
+      await copyText(code);
+      setCopiedCode(code);
+      updateNotice(`验证码已复制：${code}`);
+      window.setTimeout(() => {
+        setCopiedCode((current) => (current === code ? '' : current));
+      }, 1500);
+    } catch {
+      updateError(new Error('复制失败'), '复制验证码失败');
+    }
   }
 
   function updateError(requestError: unknown, fallback: string) {
@@ -1223,7 +1278,29 @@ export default function Workspace() {
         >
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">邮箱档案</h2>
-            <Badge variant="outline">{accounts.length}</Badge>
+            <Badge variant="outline">
+              {filteredAccounts.length}
+              {deferredMailboxQuery.trim() ? `/${accounts.length}` : ''}
+            </Badge>
+          </div>
+          <div className="relative mb-2">
+            <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
+            <Input
+              value={mailboxQuery}
+              onChange={(event) => setMailboxQuery(event.target.value)}
+              placeholder="搜索备注 / 邮箱"
+              className="h-8 pl-8 text-xs"
+            />
+            {mailboxQuery ? (
+              <button
+                type="button"
+                className="absolute right-2 top-1.5 rounded p-0.5 text-slate-400 hover:text-slate-700"
+                onClick={() => setMailboxQuery('')}
+                aria-label="清除搜索"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
           </div>
           <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
             {loadingAccounts ? (
@@ -1235,8 +1312,12 @@ export default function Workspace() {
               <div className="rounded-md border border-dashed border-slate-200 px-3 py-4 text-sm text-slate-500 dark:border-slate-800">
                 暂无邮箱档案
               </div>
+            ) : filteredAccounts.length === 0 ? (
+              <div className="rounded-md border border-dashed border-slate-200 px-3 py-4 text-sm text-slate-500 dark:border-slate-800">
+                无匹配邮箱
+              </div>
             ) : (
-              accounts.map((account) => (
+              filteredAccounts.map((account) => (
                 <button
                   key={account.id}
                   onClick={() => {
@@ -1568,7 +1649,7 @@ export default function Workspace() {
               {messages.map((message) => (
                 <div
                   key={message.id}
-                  onClick={() => void loadMessageDetail(message.id, message.folderId)}
+                  onClick={() => void loadMessageDetail(message.id, message.folderId, message)}
                   className={cn(
                     'cursor-pointer px-3 py-3 transition-colors hover:bg-slate-50 dark:hover:bg-slate-900/50',
                     activeMessageId === message.id && 'bg-slate-100 dark:bg-slate-800/70',
@@ -1745,6 +1826,33 @@ export default function Workspace() {
                   <div>{t('to')}: {activeMessage.to_recipients.join(', ') || '-'}</div>
                   {activeMessage.cc_recipients.length > 0 ? <div>{t('cc')}: {activeMessage.cc_recipients.join(', ')}</div> : null}
                 </div>
+                {verificationCodes.length > 0 ? (
+                  <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/50 dark:bg-amber-950/30">
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-200">
+                      检测到验证码
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {verificationCodes.map((code) => (
+                        <Button
+                          key={code}
+                          size="sm"
+                          variant={copiedCode === code ? 'secondary' : 'outline'}
+                          className="font-mono tracking-widest"
+                          onClick={() => void handleCopyVerificationCode(code)}
+                          title="一键复制验证码"
+                        >
+                          {copiedCode === code ? `已复制 ${code}` : code}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {loadingDetail ? (
+                  <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+                    <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                    正在加载完整正文…
+                  </div>
+                ) : null}
               </div>
 
               <div className={cn('mb-6 grid gap-4', !detailSidebarCollapsed && 'xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]')}>
@@ -1927,7 +2035,7 @@ export default function Workspace() {
                               {threadItems.map((item) => (
                                 <button
                                   key={item.id}
-                                  onClick={() => void loadMessageDetail(item.id, item.folderId)}
+                                  onClick={() => void loadMessageDetail(item.id, item.folderId, item)}
                                   className={cn(
                                     'w-full rounded-lg border px-3 py-2 text-left transition-colors',
                                     item.id === activeMessage.id
@@ -1937,7 +2045,7 @@ export default function Workspace() {
                                 >
                                   <div className="truncate text-sm font-medium">{item.subject}</div>
                                   <div className="mt-1 text-xs text-slate-500">
-                                    {item.sender} · {item.date ? format(new Date(item.date), 'MM-dd HH:mm') : '-'}
+                                    {item.sender} · {formatMailDate(item.date, 'MM-dd HH:mm')}
                                   </div>
                                 </button>
                               ))}

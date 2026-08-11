@@ -595,15 +595,32 @@ export async function batchUpdatePreferredMethod(mailboxIds: string[], preferred
   return mapBatchResponse(response);
 }
 
-export async function importMailboxes(rawText: string, preferredMethod: MailMethod): Promise<void> {
-  await requestJson('/api/mailboxes/import', {
+export async function importMailboxes(
+  rawText: string,
+  preferredMethod: MailMethod,
+  options?: { autoDetectMethod?: boolean },
+): Promise<{
+  summary: Record<string, unknown>;
+  methodProbeResults: Array<Record<string, unknown>>;
+}> {
+  const response = await requestJson<{
+    summary?: Record<string, unknown>;
+    method_probe_results?: Array<Record<string, unknown>>;
+  }>('/api/mailboxes/import', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({
       raw_text: rawText,
       preferred_method: preferredMethod,
+      auto_detect_method: options?.autoDetectMethod ?? false,
     }),
   });
+  return {
+    summary: asRecord(response.summary),
+    methodProbeResults: Array.isArray(response.method_probe_results)
+      ? response.method_probe_results.map((item) => asRecord(item))
+      : [],
+  };
 }
 
 export async function listFolders(mailboxId: string, method?: MailMethod): Promise<Folder[]> {
