@@ -5,7 +5,6 @@ import { useI18n } from '../i18n';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { BrandLockup, GitHubLink } from '../components/Brand';
-import { APP_NAME } from '../lib/brand';
 import { login as loginRequest } from '../lib/api';
 
 export default function Login() {
@@ -101,7 +100,6 @@ export default function Login() {
         <div className="mt-6 flex items-center justify-center">
           <GitHubLink />
         </div>
-        <p className="mt-3 text-center text-[11px] text-white/30">{APP_NAME}</p>
       </div>
     </div>
   );
