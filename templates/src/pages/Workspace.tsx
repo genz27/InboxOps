@@ -41,7 +41,6 @@ import { SafeHtml } from '../components/SafeHtml';
 import { cn } from '../lib/utils';
 import {
   type AuditLogRecord,
-  type AttachmentPayload,
   type PaginationMeta,
   type RuleRecord,
   type SyncStatusRecord,
@@ -98,6 +97,18 @@ import {
   touchRecentMailbox,
 } from '../lib/preferences';
 import { isEditableTarget, resolveShortcut } from '../lib/shortcuts';
+import { ComposeDrawer } from '../components/workspace/ComposeDrawer';
+import { GlobalSearchModal } from '../components/workspace/GlobalSearchModal';
+import { OpsModal } from '../components/workspace/OpsModal';
+import { RulesModal } from '../components/workspace/RulesModal';
+import { ShortcutsModal } from '../components/workspace/ShortcutsModal';
+import {
+  EMPTY_COMPOSE,
+  EMPTY_RULE_EDITOR,
+  type ComposeFormState,
+  type ComposeMode,
+  type RuleEditorState,
+} from '../components/workspace/types';
 import { useAppStore, type Email, type EmailAccount, type Folder, type MessageMeta, type MethodValue } from '../store/useAppStore';
 
 const ITEMS_PER_PAGE = 20;
@@ -112,22 +123,6 @@ const EMPTY_PAGINATION: PaginationMeta = {
 };
 
 type ViewMode = 'html' | 'text' | 'headers';
-type ComposeMode = 'new' | 'reply' | 'replyAll' | 'forward';
-
-interface ComposeFormState {
-  open: boolean;
-  mode: ComposeMode;
-  messageId: string;
-  draftMessageId: string;
-  subject: string;
-  to: string;
-  cc: string;
-  bcc: string;
-  bodyText: string;
-  attachments: AttachmentPayload[];
-  attachmentNames: string[];
-  submitting: boolean;
-}
 
 interface MetaFormState {
   tags: string;
@@ -137,35 +132,11 @@ interface MetaFormState {
   status: string;
 }
 
-interface RuleEditorState {
-  id: number | null;
-  name: string;
-  enabled: boolean;
-  priority: number;
-  conditionsText: string;
-  actionsText: string;
-}
-
 interface PendingFocus {
   mailboxId: string;
   folderId: string;
   messageId: string;
 }
-
-const EMPTY_COMPOSE: ComposeFormState = {
-  open: false,
-  mode: 'new',
-  messageId: '',
-  draftMessageId: '',
-  subject: '',
-  to: '',
-  cc: '',
-  bcc: '',
-  bodyText: '',
-  attachments: [],
-  attachmentNames: [],
-  submitting: false,
-};
 
 const EMPTY_META_FORM: MetaFormState = {
   tags: '',
@@ -173,15 +144,6 @@ const EMPTY_META_FORM: MetaFormState = {
   notes: '',
   snoozedUntil: '',
   status: 'active',
-};
-
-const EMPTY_RULE_EDITOR: RuleEditorState = {
-  id: null,
-  name: '',
-  enabled: true,
-  priority: 100,
-  conditionsText: '{\n  "subject_contains": ""\n}',
-  actionsText: '{\n  "mark_read": true,\n  "tags": [""]\n}',
 };
 
 function splitRecipients(value: string): string[] {
@@ -2492,388 +2454,70 @@ export default function Workspace() {
       </div>
 
       {compose.open ? (
-        <div className="absolute inset-0 z-50 flex justify-end bg-black/70">
-          <button type="button" className="h-full flex-1 cursor-default" onClick={() => setCompose(EMPTY_COMPOSE)} aria-label="关闭写信面板" />
-          <div className="flex h-full w-full max-w-xl flex-col border-l border-white/10 bg-[#0a0a0a] shadow-2xl">
-            <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-              <div>
-                <h2 className="text-lg font-semibold">
-                  {compose.mode === 'new' ? '写信 / 发信' : compose.mode === 'reply' ? '回复' : compose.mode === 'replyAll' ? '回复全部' : '转发'}
-                </h2>
-                <div className="mt-1 text-xs text-white/45">{activeMailbox?.email || '-'}</div>
-              </div>
-              <Button variant="ghost" size="icon" onClick={() => setCompose(EMPTY_COMPOSE)}>
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
-              <div className="grid gap-3">
-                <Input value={compose.to} onChange={(event) => setCompose((current) => ({ ...current, to: event.target.value }))} placeholder="To" />
-                <Input value={compose.cc} onChange={(event) => setCompose((current) => ({ ...current, cc: event.target.value }))} placeholder="Cc" />
-                <Input value={compose.bcc} onChange={(event) => setCompose((current) => ({ ...current, bcc: event.target.value }))} placeholder="Bcc" />
-                <Input value={compose.subject} onChange={(event) => setCompose((current) => ({ ...current, subject: event.target.value }))} placeholder={t('subject')} />
-                <textarea
-                  className="min-h-[16rem] w-full rounded-md border border-white/10 bg-transparent px-3 py-3 text-sm shadow-sm"
-                  value={compose.bodyText}
-                  onChange={(event) => setCompose((current) => ({ ...current, bodyText: event.target.value }))}
-                />
-                <div className="rounded-lg border border-dashed border-white/15 px-3 py-3">
-                  <div className="mb-2 text-sm font-medium">附件上传</div>
-                  <input type="file" multiple onChange={(event) => void handleComposeFiles(event.target.files)} />
-                  {compose.attachmentNames.length > 0 ? (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {compose.attachmentNames.map((name, index) => (
-                        <Badge key={`${name}-${index}`} variant="outline" className="gap-2">
-                          {name}
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setCompose((current) => ({
-                                ...current,
-                                attachmentNames: current.attachmentNames.filter((_, itemIndex) => itemIndex !== index),
-                                attachments: current.attachments.filter((_, itemIndex) => itemIndex !== index),
-                              }))
-                            }
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </Badge>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center justify-between gap-3 border-t border-white/10 px-5 py-4">
-              <div className="text-xs text-white/45">侧滑写信面板 · 支持草稿与回复</div>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" onClick={() => void submitCompose(false)} disabled={compose.submitting}>
-                  {compose.submitting ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
-                  保存草稿
-                </Button>
-                <Button onClick={() => void submitCompose(true)} disabled={compose.submitting}>
-                  {compose.submitting ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
-                  发送
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <ComposeDrawer
+          compose={compose}
+          mailboxEmail={activeMailbox?.email || '-'}
+          subjectPlaceholder={t('subject')}
+          onClose={() => setCompose(EMPTY_COMPOSE)}
+          onChange={(patch) => setCompose((current) => ({ ...current, ...patch }))}
+          onFiles={(files) => void handleComposeFiles(files)}
+          onRemoveAttachment={(index) =>
+            setCompose((current) => ({
+              ...current,
+              attachmentNames: current.attachmentNames.filter((_, itemIndex) => itemIndex !== index),
+              attachments: current.attachments.filter((_, itemIndex) => itemIndex !== index),
+            }))
+          }
+          onSaveDraft={() => void submitCompose(false)}
+          onSend={() => void submitCompose(true)}
+        />
       ) : null}
 
-      {shortcutsOpen ? (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6">
-          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0a0a0a] p-5 shadow-xl">
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">键盘快捷键</h2>
-              <Button variant="ghost" size="icon" onClick={() => setShortcutsOpen(false)}>
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-            <div className="space-y-2 text-sm text-white/70">
-              {[
-                ['j / k', '下一封 / 上一封'],
-                ['c', '复制验证码'],
-                ['e', '归档当前邮件'],
-                ['Delete', '删除当前邮件'],
-                ['/', '聚焦列表搜索'],
-                ['n', '写新邮件'],
-                ['r', '刷新'],
-                ['u', '切换未读筛选'],
-                ['Esc', '关闭面板 / 返回列表'],
-              ].map(([key, desc]) => (
-                <div key={key} className="flex items-center justify-between rounded-lg border border-white/10 px-3 py-2">
-                  <span>{desc}</span>
-                  <kbd className="rounded bg-white/10 px-2 py-0.5 font-mono text-xs">{key}</kbd>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      ) : null}
+      {shortcutsOpen ? <ShortcutsModal onClose={() => setShortcutsOpen(false)} /> : null}
 
       {searchOpen ? (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6">
-          <div className="flex max-h-full w-full max-w-5xl flex-col rounded-2xl border border-white/10 bg-[#0a0a0a] shadow-xl">
-            <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-              <div>
-                <h2 className="text-lg font-semibold">跨邮箱统一搜索</h2>
-                <div className="mt-1 text-xs text-white/45">基于本地索引与缓存搜索，适合跨邮箱、标签、备注和会话定位。</div>
-              </div>
-              <Button variant="ghost" size="icon" onClick={() => setSearchOpen(false)}>
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-            <div className="space-y-4 px-5 py-4">
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="min-w-[280px] flex-1">
-                  <Input value={globalSearchQuery} onChange={(event) => setGlobalSearchQuery(event.target.value)} placeholder="输入主题、发件人、备注或标签关键词" />
-                </div>
-                <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={!searchAcrossAll} onChange={(event) => setSearchAcrossAll(!event.target.checked)} />
-                  仅当前邮箱
-                </label>
-                <Button onClick={() => void executeGlobalSearch(1)} disabled={globalSearchLoading}>
-                  {globalSearchLoading ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
-                  搜索
-                </Button>
-              </div>
-              <div className="min-h-[22rem] overflow-y-auto rounded-xl border border-white/10">
-                {globalSearchResults.length === 0 ? (
-                  <div className="flex h-full items-center justify-center px-6 py-12 text-sm text-white/45">
-                    {globalSearchLoading ? '正在搜索...' : '暂无搜索结果'}
-                  </div>
-                ) : (
-                  <div className="divide-y divide-white/10">
-                    {globalSearchResults.map((item) => (
-                      <button key={`${item.mailboxId}-${item.id}`} onClick={() => jumpToMessage(item)} className="w-full px-4 py-3 text-left hover:bg-white/5">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-medium">{item.subject}</div>
-                            <div className="mt-1 truncate text-xs text-white/45">
-                              {item.mailboxEmail || '-'} · {item.sender} · {item.folderId}
-                            </div>
-                          </div>
-                          <div className="text-[11px] text-white/45">{item.date ? format(new Date(item.date), 'MM-dd HH:mm') : '-'}</div>
-                        </div>
-                        {item.meta.tags.length > 0 ? <div className="mt-2 text-xs text-white/45">标签: {item.meta.tags.join(', ')}</div> : null}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <div className="flex items-center justify-end gap-2">
-                <Button variant="ghost" size="sm" disabled={!globalSearchMeta.has_prev} onClick={() => void executeGlobalSearch(Math.max(1, globalSearchMeta.page - 1))}>
-                  上一页
-                </Button>
-                <span className="text-xs text-white/45">
-                  {globalSearchMeta.page || 1} / {globalSearchMeta.total_pages || 1}
-                </span>
-                <Button variant="ghost" size="sm" disabled={!globalSearchMeta.has_next} onClick={() => void executeGlobalSearch(globalSearchMeta.page + 1)}>
-                  下一页
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <GlobalSearchModal
+          query={globalSearchQuery}
+          searchAcrossAll={searchAcrossAll}
+          loading={globalSearchLoading}
+          results={globalSearchResults}
+          meta={globalSearchMeta}
+          onQueryChange={setGlobalSearchQuery}
+          onSearchAcrossAllChange={setSearchAcrossAll}
+          onSearch={(nextPage) => void executeGlobalSearch(nextPage ?? 1)}
+          onJump={jumpToMessage}
+          onClose={() => setSearchOpen(false)}
+        />
       ) : null}
 
       {rulesOpen ? (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6">
-          <div className="flex max-h-full w-full max-w-6xl flex-col rounded-2xl border border-white/10 bg-[#0a0a0a] shadow-xl">
-            <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-              <div>
-                <h2 className="text-lg font-semibold">规则引擎</h2>
-                <div className="mt-1 text-xs text-white/45">支持条件匹配、标签追加、标记已读、移动文件夹、跟进与备注追加。</div>
-              </div>
-              <Button variant="ghost" size="icon" onClick={() => setRulesOpen(false)}>
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-            <div className="grid min-h-0 flex-1 gap-4 overflow-hidden px-5 py-4 lg:grid-cols-[minmax(0,1fr)_minmax(360px,420px)]">
-              <div className="min-h-0 overflow-y-auto rounded-xl border border-white/10">
-                <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <ShieldCheck className="h-4 w-4" />
-                    <span className="text-sm font-semibold">已保存规则</span>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button variant="outline" size="sm" onClick={openCreateRule}>
-                      新建规则
-                    </Button>
-                    <Button variant="outline" size="sm" onClick={() => void handleApplyRules()} disabled={busyAction === 'rule-apply'}>
-                      一键应用
-                    </Button>
-                  </div>
-                </div>
-                {loadingRules ? (
-                  <div className="flex items-center justify-center gap-2 px-4 py-10 text-sm text-white/45">
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                    {t('loading')}
-                  </div>
-                ) : rules.length === 0 ? (
-                  <div className="px-4 py-10 text-center text-sm text-white/45">当前邮箱还没有规则</div>
-                ) : (
-                  <div className="space-y-3 p-4">
-                    {rules.map((rule) => (
-                      <div key={rule.id} className="rounded-xl border border-white/10 p-4">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <div className="text-sm font-semibold">{rule.name}</div>
-                            <div className="mt-1 text-xs text-white/45">priority: {rule.priority}</div>
-                          </div>
-                          <Badge variant={rule.enabled ? 'secondary' : 'outline'}>{rule.enabled ? 'enabled' : 'disabled'}</Badge>
-                        </div>
-                        <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-white/5 p-3 text-xs text-white/70">
-                          {JSON.stringify(rule.conditions, null, 2)}
-                        </pre>
-                        <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-white/5 p-3 text-xs text-white/70">
-                          {JSON.stringify(rule.actions, null, 2)}
-                        </pre>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <Button variant="ghost" size="sm" onClick={() => openEditRule(rule)}>
-                            编辑
-                          </Button>
-                          <Button variant="ghost" size="sm" onClick={() => void handleApplyRules(rule.id)}>
-                            应用当前规则
-                          </Button>
-                          <Button variant="destructive" size="sm" onClick={() => void handleDeleteRule(rule.id)}>
-                            删除
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="min-h-0 overflow-y-auto rounded-xl border border-white/10 p-4">
-                <h3 className="mb-4 text-sm font-semibold">{ruleEditor.id ? '编辑规则' : '新建规则'}</h3>
-                <div className="grid gap-3">
-                  <Input value={ruleEditor.name} onChange={(event) => setRuleEditor((current) => ({ ...current, name: event.target.value }))} placeholder="规则名称" />
-                  <div className="grid grid-cols-[1fr_120px] gap-3">
-                    <label className="flex items-center gap-2 rounded-md border border-white/10 px-3 py-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={ruleEditor.enabled}
-                        onChange={(event) => setRuleEditor((current) => ({ ...current, enabled: event.target.checked }))}
-                      />
-                      启用规则
-                    </label>
-                    <Input
-                      type="number"
-                      value={ruleEditor.priority}
-                      onChange={(event) => setRuleEditor((current) => ({ ...current, priority: Number(event.target.value) || 100 }))}
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-xs font-medium text-white/45">条件 JSON</label>
-                    <textarea
-                      className="min-h-40 w-full rounded-md border border-white/10 bg-transparent px-3 py-2 font-mono text-sm shadow-sm"
-                      value={ruleEditor.conditionsText}
-                      onChange={(event) => setRuleEditor((current) => ({ ...current, conditionsText: event.target.value }))}
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-xs font-medium text-white/45">动作 JSON</label>
-                    <textarea
-                      className="min-h-40 w-full rounded-md border border-white/10 bg-transparent px-3 py-2 font-mono text-sm shadow-sm"
-                      value={ruleEditor.actionsText}
-                      onChange={(event) => setRuleEditor((current) => ({ ...current, actionsText: event.target.value }))}
-                    />
-                  </div>
-                  <div className="flex justify-end gap-2">
-                    <Button variant="outline" onClick={() => setRuleEditor(EMPTY_RULE_EDITOR)}>
-                      清空
-                    </Button>
-                    <Button onClick={() => void saveRuleEditor()} disabled={busyAction === 'rule-save'}>
-                      {busyAction === 'rule-save' ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
-                      保存规则
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <RulesModal
+          rules={rules}
+          loading={loadingRules}
+          loadingLabel={t('loading')}
+          busyAction={busyAction}
+          editor={ruleEditor}
+          onEditorChange={setRuleEditor}
+          onClose={() => setRulesOpen(false)}
+          onCreate={openCreateRule}
+          onApplyAll={() => void handleApplyRules()}
+          onEdit={openEditRule}
+          onApply={(ruleId) => void handleApplyRules(ruleId)}
+          onDelete={(ruleId) => void handleDeleteRule(ruleId)}
+          onSave={() => void saveRuleEditor()}
+        />
       ) : null}
 
       {opsOpen ? (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6">
-          <div className="flex max-h-full w-full max-w-5xl flex-col rounded-2xl border border-white/10 bg-[#0a0a0a] shadow-xl">
-            <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-              <div>
-                <h2 className="text-lg font-semibold">审计日志和同步中心</h2>
-                <div className="mt-1 text-xs text-white/45">查看同步状态、任务历史和高频后台操作审计。</div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button onClick={() => void handleRunSync()} disabled={busyAction === 'sync'}>
-                  {busyAction === 'sync' ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-                  立即同步
-                </Button>
-                <Button variant="ghost" size="icon" onClick={() => setOpsOpen(false)}>
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-            <div className="grid min-h-0 flex-1 gap-4 overflow-hidden px-5 py-4 lg:grid-cols-2">
-              <div className="min-h-0 overflow-y-auto rounded-xl border border-white/10 p-4">
-                <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-sm font-semibold">同步中心</h3>
-                  <Badge variant="outline">{syncStatus?.states.length || 0}</Badge>
-                </div>
-                {loadingOps ? (
-                  <div className="flex items-center gap-2 text-sm text-white/45">
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                    {t('loading')}
-                  </div>
-                ) : !syncStatus ? (
-                  <div className="text-sm text-white/45">暂无同步数据</div>
-                ) : (
-                  <div className="space-y-3">
-                    {syncStatus.jobs.map((job) => (
-                      <div key={job.id} className="rounded-lg border border-white/10 p-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="text-sm font-medium">Job #{job.id}</span>
-                          <Badge variant={job.status === 'completed' ? 'secondary' : job.status === 'failed' ? 'destructive' : 'outline'}>
-                            {job.status}
-                          </Badge>
-                        </div>
-                        <div className="mt-2 text-xs text-white/45">
-                          <div>folders: {job.folders_synced}</div>
-                          <div>cached: {job.cached_messages}</div>
-                          <div>{job.started_at || '-'}</div>
-                        </div>
-                      </div>
-                    ))}
-                    {syncStatus.states.map((state) => (
-                      <div key={`${state.method}-${state.folder_id}`} className="rounded-lg border border-white/10 p-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="text-sm font-medium">{state.folder_id || 'INBOX'}</span>
-                          <Badge variant={state.status === 'completed' ? 'secondary' : state.status === 'failed' ? 'destructive' : 'outline'}>
-                            {state.status}
-                          </Badge>
-                        </div>
-                        <div className="mt-2 text-xs text-white/45">
-                          <div>{methodLabel(state.method)}</div>
-                          <div>cached: {state.cached_messages}</div>
-                          <div>{state.last_synced_at || '-'}</div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="min-h-0 overflow-y-auto rounded-xl border border-white/10 p-4">
-                <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-sm font-semibold">审计日志</h3>
-                  <Badge variant="outline">{auditLogs.length}</Badge>
-                </div>
-                {auditLogs.length === 0 ? (
-                  <div className="text-sm text-white/45">暂无审计日志</div>
-                ) : (
-                  <div className="space-y-3">
-                    {auditLogs.map((item) => (
-                      <div key={item.id} className="rounded-lg border border-white/10 p-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="text-sm font-medium">{item.action}</div>
-                          <Badge variant={item.status === 'success' ? 'secondary' : item.status === 'failed' ? 'destructive' : 'outline'}>
-                            {item.status}
-                          </Badge>
-                        </div>
-                        <div className="mt-2 text-xs text-white/45">
-                          <div>{item.target_type} · {item.target_id || '-'}</div>
-                          <div>{item.created_at || '-'}</div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
+        <OpsModal
+          loading={loadingOps}
+          loadingLabel={t('loading')}
+          busyAction={busyAction}
+          syncStatus={syncStatus}
+          auditLogs={auditLogs}
+          onSync={() => void handleRunSync()}
+          onClose={() => setOpsOpen(false)}
+        />
       ) : null}
     </div>
   );
