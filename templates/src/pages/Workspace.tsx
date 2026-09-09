@@ -1,44 +1,9 @@
 import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  AlertCircle,
-  Archive,
-  ChevronLeft,
-  ChevronRight,
-  Clock,
-  Copy,
-  Download,
-  FilePlus2,
-  FolderPen,
-  FolderPlus,
-  Forward,
-  Keyboard,
-  LoaderCircle,
-  Mail,
-  MailOpen,
-  Menu,
-  MoreHorizontal,
-  Paperclip,
-  Pin,
-  PinOff,
-  RefreshCw,
-  Reply,
-  ReplyAll,
-  Search,
-  Settings2,
-  ShieldCheck,
-  Star,
-  Trash2,
-  X,
-} from 'lucide-react';
-import { format } from 'date-fns';
+import { X } from 'lucide-react';
 import { useI18n } from '../i18n';
 import { Button } from '../components/ui/Button';
-import { Input } from '../components/ui/Input';
-import { Badge } from '../components/ui/Badge';
 import { useFeedback } from '../components/Feedback';
-import { SafeHtml } from '../components/SafeHtml';
-import { cn } from '../lib/utils';
 import {
   type AuditLogRecord,
   type PaginationMeta,
@@ -82,7 +47,6 @@ import {
   fileToAttachmentPayload,
   fromDatetimeLocalValue,
   methodCapabilities,
-  methodLabel,
   toDatetimeLocalValue,
 } from '../lib/mail';
 import {
@@ -99,15 +63,22 @@ import {
 import { isEditableTarget, resolveShortcut } from '../lib/shortcuts';
 import { ComposeDrawer } from '../components/workspace/ComposeDrawer';
 import { GlobalSearchModal } from '../components/workspace/GlobalSearchModal';
+import { MailboxSidebar } from '../components/workspace/MailboxSidebar';
+import { MailListPane } from '../components/workspace/MailListPane';
+import { MessageReader } from '../components/workspace/MessageReader';
 import { OpsModal } from '../components/workspace/OpsModal';
 import { RulesModal } from '../components/workspace/RulesModal';
 import { ShortcutsModal } from '../components/workspace/ShortcutsModal';
 import {
   EMPTY_COMPOSE,
+  EMPTY_META_FORM,
   EMPTY_RULE_EDITOR,
+  formatMailDate,
   type ComposeFormState,
   type ComposeMode,
+  type MetaFormState,
   type RuleEditorState,
+  type ViewMode,
 } from '../components/workspace/types';
 import { useAppStore, type Email, type EmailAccount, type Folder, type MessageMeta, type MethodValue } from '../store/useAppStore';
 
@@ -122,28 +93,10 @@ const EMPTY_PAGINATION: PaginationMeta = {
   has_next: false,
 };
 
-type ViewMode = 'html' | 'text' | 'headers';
-
-interface MetaFormState {
-  tags: string;
-  followUp: string;
-  notes: string;
-  snoozedUntil: string;
-  status: string;
-}
-
-interface PendingFocus {
+type PendingFocus = {
   mailboxId: string;
   folderId: string;
   messageId: string;
-}
-
-const EMPTY_META_FORM: MetaFormState = {
-  tags: '',
-  followUp: '',
-  notes: '',
-  snoozedUntil: '',
-  status: 'active',
 };
 
 function splitRecipients(value: string): string[] {
@@ -155,21 +108,6 @@ function splitRecipients(value: string): string[] {
 
 function joinRecipients(items: string[]): string {
   return items.join(', ');
-}
-
-function formatMailDate(value: string | undefined | null, pattern = 'yyyy-MM-dd HH:mm'): string {
-  if (!value) {
-    return '-';
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return '-';
-  }
-  try {
-    return format(date, pattern);
-  } catch {
-    return '-';
-  }
 }
 
 function makeQuotedBody(message: Email): string {
@@ -213,14 +151,6 @@ function parseJsonObject(text: string, fieldName: string): Record<string, unknow
   } catch {
     throw new Error(`${fieldName} 必须是合法 JSON 对象`);
   }
-}
-
-function isDraftFolder(email: Email | null, folderId: string) {
-  if (!email) {
-    return false;
-  }
-  const normalized = (email.folderId || folderId || '').toLowerCase();
-  return normalized.includes('draft');
 }
 
 export default function Workspace() {
@@ -949,122 +879,6 @@ export default function Workspace() {
     }
   }
 
-  function renderMailboxList() {
-    if (loadingAccounts) {
-      return (
-        <div className="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-white/45">
-          <LoaderCircle className="h-4 w-4 animate-spin" />
-          {t('loading')}
-        </div>
-      );
-    }
-    if (accounts.length === 0) {
-      return (
-        <div className="rounded-md border border-dashed border-white/15 px-3 py-4 text-sm text-white/45">
-          暂无邮箱档案
-        </div>
-      );
-    }
-    if (filteredAccounts.length === 0) {
-      return (
-        <div className="rounded-md border border-dashed border-white/15 px-3 py-4 text-sm text-white/45">
-          无匹配邮箱
-        </div>
-      );
-    }
-
-    return filteredAccounts.map((account) => {
-      const pinned = pinnedIds.includes(account.id);
-      return (
-        <div
-          key={account.id}
-          className={cn(
-            'group rounded-lg border px-2 py-2 transition-colors',
-            activeMailboxId === account.id
-              ? 'border-white/20 bg-white/10'
-              : 'border-transparent hover:bg-white/5',
-          )}
-        >
-          <button type="button" onClick={() => selectMailbox(account.id)} className="w-full text-left">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5">
-                  {pinned ? <Pin className="h-3 w-3 shrink-0 text-amber-500" /> : null}
-                  <div className="truncate text-sm font-medium">{account.label || account.email}</div>
-                </div>
-                <div className="truncate text-xs text-white/45">{account.email}</div>
-              </div>
-              <div className="flex shrink-0 items-center gap-1.5">
-                {(account.unreadCount ?? 0) > 0 ? (
-                  <Badge variant="secondary" className="h-5 min-w-5 justify-center px-1 text-[10px]">
-                    {account.unreadCount}
-                  </Badge>
-                ) : null}
-                <div
-                  className={cn(
-                    'h-2.5 w-2.5 rounded-full',
-                    account.status === 'connected'
-                      ? 'bg-emerald-500'
-                      : account.status === 'disconnected'
-                        ? 'bg-red-500'
-                        : 'bg-white/30',
-                  )}
-                />
-              </div>
-            </div>
-            <div className="mt-1.5 text-[11px] text-white/45">{methodLabel(account.preferredMethod)}</div>
-          </button>
-          <div className="mt-2 hidden flex-wrap gap-1 group-hover:flex">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-[11px]"
-              onClick={(event) => handleTogglePin(account.id, event)}
-              title={pinned ? '取消置顶' : '置顶'}
-            >
-              {pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-[11px]"
-              onClick={(event) => void handleCopyAccountEmail(account.email, event)}
-              title="复制邮箱"
-            >
-              <Copy className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-[11px]"
-              disabled={accountActionBusy === `test-${account.id}`}
-              onClick={(event) => void handleTestAccount(account.id, event)}
-              title="测试连接"
-            >
-              {accountActionBusy === `test-${account.id}` ? (
-                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <RefreshCw className="h-3.5 w-3.5" />
-              )}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-[11px]"
-              onClick={(event) => {
-                event.stopPropagation();
-                navigate('/accounts');
-              }}
-              title="账号管理"
-            >
-              <Settings2 className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-        </div>
-      );
-    });
-  }
-
   function updateError(requestError: unknown, fallback: string) {
     toast(requestError instanceof Error ? requestError.message : fallback, 'error');
   }
@@ -1588,169 +1402,60 @@ export default function Workspace() {
   }
 
   const mailboxSidebar = (
-        <>
-        <div
-          className={cn(
-            'flex flex-col overflow-hidden p-4',
-            foldersCollapsed
-              ? 'min-h-0 flex-1'
-              : 'max-h-[45%] min-h-[11rem] shrink-0 border-b border-white/10',
-          )}
-        >
-          <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-white/45">邮箱档案</h2>
-            <div className="flex items-center gap-1">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                title={otpNotifyEnabled ? '关闭验证码通知' : '开启验证码通知'}
-                onClick={() => {
-                  const next = !otpNotifyEnabled;
-                  setOtpNotifyEnabledState(next);
-                  setOtpNotifyEnabled(next);
-                  if (next) {
-                    void ensureNotificationPermission();
-                  }
-                }}
-              >
-                <ShieldCheck className={cn('h-3.5 w-3.5', otpNotifyEnabled ? 'text-emerald-500' : 'text-white/40')} />
-              </Button>
-              <Badge variant="outline">
-                {filteredAccounts.length}
-                {deferredMailboxQuery.trim() ? `/${accounts.length}` : ''}
-              </Badge>
-            </div>
-          </div>
-          <div className="relative mb-2">
-            <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-white/40" />
-            <Input
-              value={mailboxQuery}
-              onChange={(event) => setMailboxQuery(event.target.value)}
-              placeholder="搜索备注 / 邮箱"
-              className="h-8 pl-8 text-xs"
-            />
-            {mailboxQuery ? (
-              <button
-                type="button"
-                className="absolute right-2 top-1.5 rounded p-0.5 text-white/40 hover:text-white"
-                onClick={() => setMailboxQuery('')}
-                aria-label="清除搜索"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            ) : null}
-          </div>
-          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">{renderMailboxList()}</div>
-        </div>
+    <MailboxSidebar
+      foldersCollapsed={foldersCollapsed}
+      otpNotifyEnabled={otpNotifyEnabled}
+      mailboxQuery={mailboxQuery}
+      deferredMailboxQuery={deferredMailboxQuery}
+      accounts={accounts}
+      filteredAccounts={filteredAccounts}
+      pinnedIds={pinnedIds}
+      activeMailboxId={activeMailboxId}
+      loadingAccounts={loadingAccounts}
+      loadingFolders={loadingFolders}
+      loadingLabel={t('loading')}
+      foldersLabel={t('folders')}
+      folders={folders}
+      activeFolderId={activeFolderId}
+      activeFolder={activeFolder}
+      capabilities={capabilities}
+      accountActionBusy={accountActionBusy}
+      onToggleOtpNotify={() => {
+        const next = !otpNotifyEnabled;
+        setOtpNotifyEnabledState(next);
+        setOtpNotifyEnabled(next);
+        if (next) {
+          void ensureNotificationPermission();
+        }
+      }}
+      onMailboxQueryChange={setMailboxQuery}
+      onSelectMailbox={selectMailbox}
+      onTogglePin={handleTogglePin}
+      onCopyAccountEmail={handleCopyAccountEmail}
+      onTestAccount={handleTestAccount}
+      onOpenAccounts={(event) => {
+        event.stopPropagation();
+        navigate('/accounts');
+      }}
+      onToggleFoldersCollapsed={() => setFoldersCollapsed((current) => !current)}
+      onCreateFolder={() => void handleFolderAction('create')}
+      onRenameFolder={() => void handleFolderAction('rename')}
+      onDeleteFolder={() => void handleFolderAction('delete')}
+      onSelectFolder={(folderId) => {
+        setActiveFolderId(folderId);
+        setPage(1);
+        setSelectedMessageIds([]);
+        setMobileNavOpen(false);
+      }}
+    />
+  );
 
-        <div
-          className={cn(
-            'flex min-h-0 flex-col overflow-hidden p-4',
-            foldersCollapsed ? 'shrink-0 border-t border-white/10' : 'flex-1',
-          )}
-        >
-          <div className={cn('flex items-center justify-between gap-2', foldersCollapsed ? 'mb-0' : 'mb-3')}>
-            <button
-              type="button"
-              className="flex min-w-0 items-center gap-2 rounded-md text-left transition-colors hover:text-white"
-              onClick={() => setFoldersCollapsed((current) => !current)}
-              aria-expanded={!foldersCollapsed}
-              aria-controls="workspace-folders-panel"
-            >
-              <ChevronRight
-                className={cn(
-                  'h-4 w-4 shrink-0 text-white/40 transition-transform duration-200',
-                  !foldersCollapsed && 'rotate-90',
-                )}
-              />
-              <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-white/45">{t('folders')}</h2>
-            </button>
-            <div className="flex items-center gap-1">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                disabled={!capabilities.canManageFolders}
-                title={capabilities.canManageFolders ? '新建文件夹' : capabilities.writeUnsupportedHint}
-                onClick={() => void handleFolderAction('create')}
-              >
-                <FolderPlus className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                disabled={!capabilities.canManageFolders || !activeFolder || activeFolder.type !== 'custom'}
-                title={capabilities.canManageFolders ? '重命名文件夹' : capabilities.writeUnsupportedHint}
-                onClick={() => void handleFolderAction('rename')}
-              >
-                <FolderPen className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                disabled={!capabilities.canManageFolders || !activeFolder || activeFolder.type !== 'custom'}
-                title={capabilities.canManageFolders ? '删除文件夹' : capabilities.writeUnsupportedHint}
-                onClick={() => void handleFolderAction('delete')}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-
-          <div
-            id="workspace-folders-panel"
-            className={cn(
-              'grid transition-[grid-template-rows,opacity] duration-200 ease-out',
-              foldersCollapsed ? 'grid-rows-[0fr] opacity-0' : 'min-h-0 flex-1 grid-rows-[1fr] opacity-100',
-            )}
-          >
-            <div className="min-h-0 overflow-hidden">
-              <div className="min-h-0 h-full space-y-1 overflow-y-auto pr-1">
-                {loadingFolders ? (
-                  <div className="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-white/45">
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                    {t('loading')}
-                  </div>
-                ) : (
-                  folders.map((folder) => (
-                    <button
-                      key={folder.id}
-                      onClick={() => {
-                        setActiveFolderId(folder.id);
-                        setPage(1);
-                        setSelectedMessageIds([]);
-                        setMobileNavOpen(false);
-                      }}
-                      className={cn(
-                        'flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-sm transition-colors',
-                        activeFolderId === folder.id
-                          ? 'bg-white/10 font-medium text-white'
-                          : 'text-white/70 hover:bg-white/5',
-                      )}
-                    >
-                      <span className="truncate">{folder.displayName}</span>
-                      {folder.unreadCount > 0 ? <Badge variant="secondary">{folder.unreadCount}</Badge> : null}
-                    </button>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-        </>
-      );
-
-      return (
+  return (
     <div className="relative flex h-full w-full overflow-hidden bg-black">
-      {/* 桌面侧边栏 */}
       <div className="hidden w-72 shrink-0 overflow-hidden border-r border-white/10 bg-[#0a0a0a] lg:flex lg:flex-col">
         {mailboxSidebar}
       </div>
 
-      {/* 移动端抽屉 */}
       {mobileNavOpen ? (
         <div className="absolute inset-0 z-40 flex lg:hidden">
           <button type="button" className="absolute inset-0 bg-black/40" onClick={() => setMobileNavOpen(false)} aria-label="关闭侧栏" />
@@ -1766,692 +1471,186 @@ export default function Workspace() {
         </div>
       ) : null}
 
-      <div
-        className={cn(
-          'flex w-full shrink-0 flex-col border-r border-white/10 bg-black md:w-[28rem]',
-          activeMessageId ? 'hidden md:flex' : 'flex',
-        )}
-      >
-        <div className="space-y-3 border-b border-white/10 p-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" size="icon" className="h-9 w-9 lg:hidden" onClick={() => setMobileNavOpen(true)} title="打开邮箱列表">
-              <Menu className="h-4 w-4" />
-            </Button>
-            <div className="relative min-w-[180px] flex-1">
-              <Search className="absolute left-2.5 top-2 h-4 w-4 text-white/40" />
-              <Input
-                ref={listSearchRef}
-                value={searchQuery}
-                onChange={(event) => {
-                  setSearchQuery(event.target.value);
-                  setPage(1);
-                }}
-                placeholder={`${t('search')}  (/)`}
-                className="pl-8"
-              />
-            </div>
-            <Button variant="outline" onClick={() => void refreshEverything()} disabled={loadingMessages || busyAction !== ''}>
-              <RefreshCw className={cn('mr-2 h-4 w-4', loadingMessages && 'animate-spin')} />
-              {t('refresh')}
-            </Button>
-            <Button
-              onClick={() => openCompose('new')}
-              disabled={!capabilities.canCompose || !activeMailbox}
-              title={capabilities.canCompose ? `${t('compose')} (n)` : capabilities.writeUnsupportedHint}
-            >
-              <FilePlus2 className="mr-2 h-4 w-4" />
-              {t('compose')}
-            </Button>
-            <Button variant="ghost" size="icon" className="h-9 w-9" title="快捷键帮助" onClick={() => setShortcutsOpen(true)}>
-              <Keyboard className="h-4 w-4" />
-            </Button>
-          </div>
+      <MailListPane
+        labels={{
+          search: t('search'),
+          refresh: t('refresh'),
+          compose: t('compose'),
+          unread: t('unread'),
+          starred: t('starred'),
+          hasAttachment: t('hasAttachment'),
+          dateDesc: t('dateDesc'),
+          dateAsc: t('dateAsc'),
+          clearSelection: t('clearSelection'),
+          markRead: t('markRead'),
+          markUnread: t('markUnread'),
+          star: t('star'),
+          archive: t('archive'),
+          move: t('move'),
+          delete: t('delete'),
+          loading: t('loading'),
+          noEmails: t('noEmails'),
+          selectAll: t('selectAll'),
+          page: t('page'),
+        }}
+        searchQuery={searchQuery}
+        listSearchRef={listSearchRef}
+        toolsMenuRef={toolsMenuRef}
+        loadingMessages={loadingMessages}
+        busyAction={busyAction}
+        capabilities={capabilities}
+        hasActiveMailbox={Boolean(activeMailbox)}
+        filterUnread={filterUnread}
+        filterStarred={filterStarred}
+        filterAttachment={filterAttachment}
+        sortOrder={sortOrder}
+        toolsMenuOpen={toolsMenuOpen}
+        selectedMessageIds={selectedMessageIds}
+        latestJob={latestJob}
+        messages={messages}
+        deferredSearchQuery={deferredSearchQuery}
+        activeMessageId={activeMessageId}
+        allVisibleSelected={allVisibleSelected}
+        listMeta={listMeta}
+        onOpenMobileNav={() => setMobileNavOpen(true)}
+        onSearchQueryChange={(value) => {
+          setSearchQuery(value);
+          setPage(1);
+        }}
+        onRefresh={() => void refreshEverything()}
+        onCompose={() => openCompose('new')}
+        onOpenShortcuts={() => setShortcutsOpen(true)}
+        onToggleUnread={() => {
+          setFilterUnread((current) => !current);
+          setPage(1);
+        }}
+        onToggleStarred={() => {
+          setFilterStarred((current) => !current);
+          setPage(1);
+        }}
+        onToggleAttachment={() => {
+          setFilterAttachment((current) => !current);
+          setPage(1);
+        }}
+        onToggleSortOrder={() => {
+          setSortOrder((current) => (current === 'desc' ? 'asc' : 'desc'));
+          setPage(1);
+        }}
+        onToggleToolsMenu={() => setToolsMenuOpen((open) => !open)}
+        onOpenSearch={() => {
+          setToolsMenuOpen(false);
+          setSearchOpen(true);
+        }}
+        onOpenRules={() => {
+          setToolsMenuOpen(false);
+          setRulesOpen(true);
+        }}
+        onOpenOps={() => {
+          setToolsMenuOpen(false);
+          setOpsOpen(true);
+        }}
+        onClearSelection={() => setSelectedMessageIds([])}
+        onMarkRead={() => void handleBatchAction('mark_read', selectedMessageIds)}
+        onMarkUnread={() => void handleBatchAction('mark_unread', selectedMessageIds)}
+        onStar={() => void handleBatchAction('flag', selectedMessageIds)}
+        onArchive={() => void handleBatchAction('archive', selectedMessageIds)}
+        onMove={() => {
+          void (async () => {
+            const destinationFolder = await prompt({
+              title: '移动到文件夹',
+              label: '文件夹 ID 或名称',
+              confirmLabel: '移动',
+            });
+            if (destinationFolder) {
+              await handleBatchAction('move', selectedMessageIds, destinationFolder);
+            }
+          })();
+        }}
+        onDelete={() => {
+          void (async () => {
+            const ok = await confirm({
+              title: '删除邮件',
+              body: `确认删除已选的 ${selectedMessageIds.length} 封邮件？`,
+              confirmLabel: '删除',
+              danger: true,
+            });
+            if (ok) {
+              await handleBatchAction('delete', selectedMessageIds);
+            }
+          })();
+        }}
+        onClearFilters={() => {
+          setSearchQuery('');
+          setFilterUnread(false);
+          setFilterStarred(false);
+          setFilterAttachment(false);
+          setPage(1);
+        }}
+        onOpenMessage={(message) => void loadMessageDetail(message.id, message.folderId, message)}
+        onToggleMessageSelected={(messageId) =>
+          setSelectedMessageIds((current) =>
+            current.includes(messageId) ? current.filter((item) => item !== messageId) : [...current, messageId],
+          )
+        }
+        onToggleSelectAll={(checked) => setSelectedMessageIds(checked ? messages.map((item) => item.id) : [])}
+        onPrevPage={() => setPage((current) => Math.max(1, current - 1))}
+        onNextPage={() => setPage((current) => current + 1)}
+      />
 
-          <div className="flex flex-wrap items-center gap-1">
-            <Button
-              variant={filterUnread ? 'secondary' : 'ghost'}
-              size="icon"
-              className="h-8 w-8"
-              title={`${t('unread')} (u)`}
-              onClick={() => {
-                setFilterUnread((current) => !current);
-                setPage(1);
-              }}
-            >
-              <Mail className="h-4 w-4" />
-            </Button>
-            <Button
-              variant={filterStarred ? 'secondary' : 'ghost'}
-              size="icon"
-              className="h-8 w-8"
-              title={t('starred')}
-              onClick={() => {
-                setFilterStarred((current) => !current);
-                setPage(1);
-              }}
-            >
-              <Star className={cn('h-4 w-4', filterStarred && 'fill-amber-400 text-amber-400')} />
-            </Button>
-            <Button
-              variant={filterAttachment ? 'secondary' : 'ghost'}
-              size="icon"
-              className="h-8 w-8"
-              title={t('hasAttachment')}
-              onClick={() => {
-                setFilterAttachment((current) => !current);
-                setPage(1);
-              }}
-            >
-              <Paperclip className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8"
-              title={sortOrder === 'desc' ? t('dateDesc') : t('dateAsc')}
-              onClick={() => {
-                setSortOrder((current) => (current === 'desc' ? 'asc' : 'desc'));
-                setPage(1);
-              }}
-            >
-              <Clock className="h-4 w-4" />
-            </Button>
-            <div className="relative ml-auto" ref={toolsMenuRef}>
-              <Button
-                variant={toolsMenuOpen ? 'secondary' : 'ghost'}
-                size="icon"
-                className="h-8 w-8"
-                title="更多工具"
-                onClick={() => setToolsMenuOpen((open) => !open)}
-              >
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-              {toolsMenuOpen ? (
-                <div className="absolute right-0 top-full z-20 mt-1 w-40 overflow-hidden rounded-lg border border-white/10 bg-[#0a0a0a] py-1">
-                  <button
-                    type="button"
-                    className="flex w-full items-center px-3 py-2 text-left text-sm text-white/80 hover:bg-white/5"
-                    onClick={() => {
-                      setToolsMenuOpen(false);
-                      setSearchOpen(true);
-                    }}
-                  >
-                    统一搜索
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full items-center px-3 py-2 text-left text-sm text-white/80 hover:bg-white/5"
-                    onClick={() => {
-                      setToolsMenuOpen(false);
-                      setRulesOpen(true);
-                    }}
-                  >
-                    规则
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full items-center px-3 py-2 text-left text-sm text-white/80 hover:bg-white/5"
-                    onClick={() => {
-                      setToolsMenuOpen(false);
-                      setOpsOpen(true);
-                    }}
-                  >
-                    同步中心
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          </div>
-
-          {selectedMessageIds.length > 0 ? (
-            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-[#0a0a0a] px-3 py-2 text-sm">
-              <span className="mr-2 text-white/70">{selectedMessageIds.length} 已选</span>
-              <Button variant="secondary" size="sm" onClick={() => setSelectedMessageIds([])}>
-                <X className="mr-2 h-4 w-4" />
-                {t('clearSelection')}
-              </Button>
-              <Button variant="secondary" size="sm" onClick={() => void handleBatchAction('mark_read', selectedMessageIds)}>
-                {t('markRead')}
-              </Button>
-              <Button variant="secondary" size="sm" onClick={() => void handleBatchAction('mark_unread', selectedMessageIds)}>
-                {t('markUnread')}
-              </Button>
-              <Button variant="secondary" size="sm" onClick={() => void handleBatchAction('flag', selectedMessageIds)}>
-                {t('star')}
-              </Button>
-              <Button variant="secondary" size="sm" onClick={() => void handleBatchAction('archive', selectedMessageIds)}>
-                {t('archive')}
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => {
-                  void (async () => {
-                    const destinationFolder = await prompt({
-                      title: '移动到文件夹',
-                      label: '文件夹 ID 或名称',
-                      confirmLabel: '移动',
-                    });
-                    if (destinationFolder) {
-                      await handleBatchAction('move', selectedMessageIds, destinationFolder);
-                    }
-                  })();
-                }}
-              >
-                {t('move')}
-              </Button>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => {
-                  void (async () => {
-                    const ok = await confirm({
-                      title: '删除邮件',
-                      body: `确认删除已选的 ${selectedMessageIds.length} 封邮件？`,
-                      confirmLabel: '删除',
-                      danger: true,
-                    });
-                    if (ok) {
-                      await handleBatchAction('delete', selectedMessageIds);
-                    }
-                  })();
-                }}
-              >
-                {t('delete')}
-              </Button>
-            </div>
-          ) : null}
-
-          {latestJob ? (
-            <div className="flex flex-wrap items-center gap-2 text-[11px] text-white/45">
-              <span>同步：{latestJob.status}</span>
-              {latestJob.processed_messages != null ? <span>处理 {latestJob.processed_messages} 封</span> : null}
-              {latestJob.finished_at ? <span>完成于 {formatMailDate(latestJob.finished_at, 'MM-dd HH:mm')}</span> : null}
-            </div>
-          ) : null}
-        </div>
-
-        <div className="relative min-h-0 flex-1 overflow-y-auto">
-          {loadingMessages && messages.length === 0 ? (
-            <div className="flex h-full items-center justify-center gap-2 text-sm text-white/45">
-              <LoaderCircle className="h-4 w-4 animate-spin" />
-              {t('loading')}
-            </div>
-          ) : messages.length === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-white/45">
-              <Mail className="h-8 w-8 text-white/35" />
-              <div>{t('noEmails')}</div>
-              {deferredSearchQuery || filterUnread || filterStarred || filterAttachment ? (
-                <button
-                  type="button"
-                  className="text-xs text-white underline underline-offset-2"
-                  onClick={() => {
-                    setSearchQuery('');
-                    setFilterUnread(false);
-                    setFilterStarred(false);
-                    setFilterAttachment(false);
-                    setPage(1);
-                  }}
-                >
-                  清除筛选条件
-                </button>
-              ) : null}
-            </div>
-          ) : (
-            <div className={cn('divide-y divide-white/10', loadingMessages && 'opacity-60')}>
-              {messages.map((message) => (
-                <div
-                  key={message.id}
-                  onClick={() => void loadMessageDetail(message.id, message.folderId, message)}
-                  className={cn(
-                    'cursor-pointer px-3 py-3 transition-colors hover:bg-white/5',
-                    activeMessageId === message.id && 'bg-white/10',
-                    !message.is_read && 'font-medium',
-                  )}
-                >
-                  <div className="flex items-start gap-3">
-                    <input
-                      type="checkbox"
-                      className="mt-1 rounded border-white/20"
-                      checked={selectedMessageIds.includes(message.id)}
-                      onChange={(event) => {
-                        event.stopPropagation();
-                        setSelectedMessageIds((current) =>
-                          current.includes(message.id) ? current.filter((item) => item !== message.id) : [...current, message.id],
-                        );
-                      }}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="mb-1 flex items-center justify-between gap-3">
-                        <span className="truncate text-sm text-white">{message.sender}</span>
-                        <span className="shrink-0 text-[11px] text-white/45">
-                          {formatMailDate(message.date, 'MM-dd HH:mm')}
-                        </span>
-                      </div>
-                      <div className="truncate text-sm text-white/85">{message.subject}</div>
-                      <div className="mt-1 line-clamp-2 text-xs text-white/45">{message.preview}</div>
-                      <div className="mt-2 flex items-center gap-2">
-                        {message.is_flagged ? <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" /> : null}
-                        {message.has_attachments ? <Paperclip className="h-3.5 w-3.5 text-white/40" /> : null}
-                        {message.importance === 'high' ? <AlertCircle className="h-3.5 w-3.5 text-red-500" /> : null}
-                        {(message.meta?.tags?.length ?? 0) > 0 ? (
-                          <Badge variant="outline" className="max-w-[9rem] truncate">
-                            {message.meta?.tags?.join(', ')}
-                          </Badge>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center justify-between border-t border-white/10 px-3 py-2 text-xs text-white/45">
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              className="rounded border-white/20"
-              checked={allVisibleSelected}
-              onChange={(event) => setSelectedMessageIds(event.target.checked ? messages.map((item) => item.id) : [])}
-            />
-            {t('selectAll')}
-          </label>
-          <div className="flex items-center gap-2">
-            <span className="tabular-nums">
-              {listMeta.total > 0
-                ? `${t('page')} ${listMeta.page || 1}/${Math.max(listMeta.total_pages || 1, 1)} · ${listMeta.total} 封`
-                : `${t('page')} ${listMeta.page || 1}`}
-            </span>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              disabled={!listMeta.has_prev || loadingMessages}
-              title="上一页"
-              onClick={() => setPage((current) => Math.max(1, current - 1))}
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              disabled={!listMeta.has_next || loadingMessages}
-              title="下一页"
-              onClick={() => setPage((current) => current + 1)}
-            >
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      <div className={cn('min-w-0 flex-1 bg-black', !activeMessageId ? 'hidden md:flex md:flex-col' : 'flex flex-col')}>
-        {loadingDetail ? (
-          <div className="flex flex-1 items-center justify-center gap-2 text-sm text-white/45">
-            <LoaderCircle className="h-4 w-4 animate-spin" />
-            {t('loading')}
-          </div>
-        ) : activeMessage ? (
-          <>
-            <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setActiveMessageId('')}>
-                  <ChevronLeft className="h-4 w-4" />
-                </Button>
-                {isDraftFolder(activeMessage, activeFolderId) ? (
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="h-8 w-8"
-                    disabled={!capabilities.canSaveDraft}
-                    title={capabilities.canSaveDraft ? '编辑草稿' : capabilities.writeUnsupportedHint}
-                    onClick={() => openDraftEditor(activeMessage)}
-                  >
-                    <FilePlus2 className="h-4 w-4" />
-                  </Button>
-                ) : null}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  disabled={!capabilities.canReply}
-                  title={capabilities.canReply ? '回复' : capabilities.writeUnsupportedHint}
-                  onClick={() => openCompose('reply', activeMessage)}
-                >
-                  <Reply className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  disabled={!capabilities.canReply}
-                  title={capabilities.canReply ? '回复全部' : capabilities.writeUnsupportedHint}
-                  onClick={() => openCompose('replyAll', activeMessage)}
-                >
-                  <ReplyAll className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  disabled={!capabilities.canForward}
-                  title={capabilities.canForward ? '转发' : capabilities.writeUnsupportedHint}
-                  onClick={() => openCompose('forward', activeMessage)}
-                >
-                  <Forward className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  title={activeMessage.is_read ? t('markUnread') : t('markRead')}
-                  onClick={() => void handleSingleStateUpdate('read', !activeMessage.is_read)}
-                >
-                  {activeMessage.is_read ? <Mail className="h-4 w-4" /> : <MailOpen className="h-4 w-4" />}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  title={activeMessage.is_flagged ? t('unstar') : t('star')}
-                  onClick={() => void handleSingleStateUpdate('flag', !activeMessage.is_flagged)}
-                >
-                  <Star className={cn('h-4 w-4', activeMessage.is_flagged && 'fill-amber-400 text-amber-400')} />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  title={`${t('archive')} (e)`}
-                  onClick={() => void handleBatchAction('archive', [activeMessage.id])}
-                >
-                  <Archive className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="icon"
-                  className="h-8 w-8"
-                  title={`${t('delete')} (Delete)`}
-                  onClick={() => void handleDeleteActiveMessage()}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-              <div className="text-xs text-white/45">{methodLabel(activeMethod)}</div>
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-              <div className="mb-6">
-                <div className="mb-2 flex items-start justify-between gap-4">
-                  <h1 className="text-2xl font-semibold text-white">{activeMessage.subject}</h1>
-                  <div className="flex items-center gap-1 text-sm text-white/45">
-                    <Clock className="h-3.5 w-3.5" />
-                    {formatMailDate(activeMessage.date)}
-                  </div>
-                </div>
-                <div className="space-y-1 text-sm text-white/70">
-                  <div>
-                    <span className="font-medium">{activeMessage.sender}</span>
-                    <span className="ml-2 text-white/40">{activeMessage.mailboxEmail || activeMailbox?.email}</span>
-                  </div>
-                  <div>{t('to')}: {activeMessage.to_recipients.join(', ') || '-'}</div>
-                  {activeMessage.cc_recipients.length > 0 ? <div>{t('cc')}: {activeMessage.cc_recipients.join(', ')}</div> : null}
-                </div>
-                {verificationCodes.length > 0 ? (
-                  <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
-                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-amber-200">
-                      检测到验证码
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {verificationCodes.map((code) => (
-                        <Button
-                          key={code}
-                          size="sm"
-                          variant={copiedCode === code ? 'secondary' : 'outline'}
-                          className="font-mono tracking-widest"
-                          onClick={() => void handleCopyVerificationCode(code)}
-                          title="一键复制验证码"
-                        >
-                          {copiedCode === code ? `已复制 ${code}` : code}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-                {loadingDetail ? (
-                  <div className="mt-3 flex items-center gap-2 text-xs text-white/45">
-                    <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                    正在加载完整正文…
-                  </div>
-                ) : null}
-              </div>
-
-              <div className={cn('mb-6 grid gap-4', !detailSidebarCollapsed && 'xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]')}>
-                <div className="rounded-xl border border-white/10 p-4">
-                  <div className="mb-3 flex items-center justify-between">
-                    <h3 className="text-sm font-semibold">消息视图</h3>
-                    <div className="flex items-center gap-1">
-                      <Button variant={viewMode === 'html' ? 'secondary' : 'ghost'} size="sm" onClick={() => setViewMode('html')}>
-                        {t('htmlView')}
-                      </Button>
-                      <Button variant={viewMode === 'text' ? 'secondary' : 'ghost'} size="sm" onClick={() => setViewMode('text')}>
-                        {t('textView')}
-                      </Button>
-                      <Button variant={viewMode === 'headers' ? 'secondary' : 'ghost'} size="sm" onClick={() => setViewMode('headers')}>
-                        {t('headersView')}
-                      </Button>
-                      <Button
-                        variant={detailSidebarCollapsed ? 'ghost' : 'secondary'}
-                        size="sm"
-                        onClick={() => setDetailSidebarCollapsed((current) => !current)}
-                        title={detailSidebarCollapsed ? '展开侧边信息' : '收起侧边信息'}
-                      >
-                        {detailSidebarCollapsed ? <ChevronLeft className="mr-2 h-4 w-4" /> : <ChevronRight className="mr-2 h-4 w-4" />}
-                        侧边信息
-                      </Button>
-                    </div>
-                  </div>
-
-                  {viewMode === 'html' ? (
-                    activeMessage.body_html ? (
-                      <SafeHtml html={activeMessage.body_html} minHeight={320} />
-                    ) : (
-                      <pre className="whitespace-pre-wrap text-sm text-white/75">{activeMessage.body_text}</pre>
-                    )
-                  ) : null}
-                  {viewMode === 'text' ? (
-                    <pre className="whitespace-pre-wrap text-sm text-white/75">{activeMessage.body_text}</pre>
-                  ) : null}
-                  {viewMode === 'headers' ? (
-                    <pre className="whitespace-pre-wrap rounded-lg bg-white/5 p-3 text-xs text-white/70">
-                      {activeMessage.headers || '(无 Headers)'}
-                    </pre>
-                  ) : null}
-
-                  {activeMessage.attachments.length > 0 ? (
-                    <div className="mt-6 border-t border-white/10 pt-4">
-                      <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold">
-                        <Paperclip className="h-4 w-4" />
-                        {t('attachments')} ({activeMessage.attachments.length})
-                      </h3>
-                      <div className="space-y-2">
-                        {activeMessage.attachments.map((attachment) => (
-                          <div
-                            key={attachment.id}
-                            className="flex items-center justify-between gap-3 rounded-lg border border-white/10 px-3 py-2"
-                          >
-                            <div className="min-w-0">
-                              <div className="truncate text-sm font-medium">{attachment.name}</div>
-                              <div className="text-xs text-white/45">{(attachment.size / 1024).toFixed(1)} KB</div>
-                            </div>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              disabled={busyAction === `download-${attachment.id}`}
-                              onClick={() => void handleDownloadAttachment(attachment.id, attachment.name)}
-                            >
-                              <Download className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-
-                {!detailSidebarCollapsed ? (
-                <div className="space-y-4">
-                  <div className="rounded-xl border border-white/10 p-4">
-                    <div className={cn('flex items-center justify-between gap-2', metaPanelCollapsed ? 'mb-0' : 'mb-3')}>
-                      <button
-                        type="button"
-                        className="flex min-w-0 items-center gap-2 rounded-md text-left transition-colors hover:text-white"
-                        onClick={() => setMetaPanelCollapsed((current) => !current)}
-                        aria-expanded={!metaPanelCollapsed}
-                        aria-controls="workspace-meta-panel"
-                      >
-                        <ChevronRight
-                          className={cn(
-                            'h-4 w-4 shrink-0 text-white/40 transition-transform duration-200',
-                            !metaPanelCollapsed && 'rotate-90',
-                          )}
-                        />
-                        <h3 className="text-sm font-semibold">标签 / 跟进 / 备注 / Snooze</h3>
-                      </button>
-                      <Badge variant="outline">{activeMessage.meta?.status || 'active'}</Badge>
-                    </div>
-                    <div
-                      id="workspace-meta-panel"
-                      className={cn(
-                        'grid transition-[grid-template-rows,opacity] duration-200 ease-out',
-                        metaPanelCollapsed ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100',
-                      )}
-                    >
-                      <div className="min-h-0 overflow-hidden">
-                        <div className="grid gap-3 pt-1">
-                          <div>
-                            <label className="mb-1 block text-xs font-medium text-white/45">标签</label>
-                            <Input value={metaForm.tags} onChange={(event) => setMetaForm((current) => ({ ...current, tags: event.target.value }))} placeholder="vip, follow-up" />
-                          </div>
-                          <div>
-                            <label className="mb-1 block text-xs font-medium text-white/45">跟进</label>
-                            <Input value={metaForm.followUp} onChange={(event) => setMetaForm((current) => ({ ...current, followUp: event.target.value }))} placeholder="today / tomorrow / custom" />
-                          </div>
-                          <div>
-                            <label className="mb-1 block text-xs font-medium text-white/45">稍后提醒</label>
-                            <Input type="datetime-local" value={metaForm.snoozedUntil} onChange={(event) => setMetaForm((current) => ({ ...current, snoozedUntil: event.target.value }))} />
-                          </div>
-                          <div>
-                            <label className="mb-1 block text-xs font-medium text-white/45">状态</label>
-                            <select
-                              className="flex h-9 w-full rounded-md border border-white/10 bg-transparent px-3 text-sm"
-                              value={metaForm.status}
-                              onChange={(event) => setMetaForm((current) => ({ ...current, status: event.target.value }))}
-                            >
-                              <option value="active">active</option>
-                              <option value="snoozed">snoozed</option>
-                              <option value="done">done</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label className="mb-1 block text-xs font-medium text-white/45">备注</label>
-                            <textarea
-                              className="min-h-28 w-full rounded-md border border-white/10 bg-transparent px-3 py-2 text-sm shadow-sm"
-                              value={metaForm.notes}
-                              onChange={(event) => setMetaForm((current) => ({ ...current, notes: event.target.value }))}
-                            />
-                          </div>
-                          <Button onClick={() => void handleSaveMeta()} disabled={busyAction === 'meta'}>
-                            {busyAction === 'meta' ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
-                            保存 Meta
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl border border-white/10 p-4">
-                    <div className={cn('flex items-center justify-between gap-2', threadPanelCollapsed ? 'mb-0' : 'mb-3')}>
-                      <button
-                        type="button"
-                        className="flex min-w-0 items-center gap-2 rounded-md text-left transition-colors hover:text-white"
-                        onClick={() => setThreadPanelCollapsed((current) => !current)}
-                        aria-expanded={!threadPanelCollapsed}
-                        aria-controls="workspace-thread-panel"
-                      >
-                        <ChevronRight
-                          className={cn(
-                            'h-4 w-4 shrink-0 text-white/40 transition-transform duration-200',
-                            !threadPanelCollapsed && 'rotate-90',
-                          )}
-                        />
-                        <h3 className="text-sm font-semibold">线程聚合视图</h3>
-                      </button>
-                      <Badge variant="outline">{threadItems.length}</Badge>
-                    </div>
-                    <div
-                      id="workspace-thread-panel"
-                      className={cn(
-                        'grid transition-[grid-template-rows,opacity] duration-200 ease-out',
-                        threadPanelCollapsed ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100',
-                      )}
-                    >
-                      <div className="min-h-0 overflow-hidden">
-                        <div className="pt-1">
-                          {threadItems.length === 0 ? (
-                            <div className="text-sm text-white/45">当前会话没有已缓存的线程邮件</div>
-                          ) : (
-                            <div className="space-y-2">
-                              {threadItems.map((item) => (
-                                <button
-                                  key={item.id}
-                                  onClick={() => void loadMessageDetail(item.id, item.folderId, item)}
-                                  className={cn(
-                                    'w-full rounded-lg border px-3 py-2 text-left transition-colors',
-                                    item.id === activeMessage.id
-                                      ? 'border-white/20 bg-white/10'
-                                      : 'border-white/10 hover:bg-white/5',
-                                  )}
-                                >
-                                  <div className="truncate text-sm font-medium">{item.subject}</div>
-                                  <div className="mt-1 text-xs text-white/45">
-                                    {item.sender} · {formatMailDate(item.date, 'MM-dd HH:mm')}
-                                  </div>
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                ) : null}
-              </div>
-
-              <div className="rounded-xl border border-white/10 p-4 text-xs text-white/45">
-                <div className="flex gap-2">
-                  <span className="min-w-24 font-medium">{t('messageId')}:</span>
-                  <span className="break-all font-mono">{activeMessage.internet_message_id || activeMessage.id}</span>
-                </div>
-                <div className="mt-2 flex gap-2">
-                  <span className="min-w-24 font-medium">{t('conversationId')}:</span>
-                  <span className="break-all font-mono">{activeMessage.conversation_id || '-'}</span>
-                </div>
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="flex flex-1 flex-col items-center justify-center gap-4 text-white/45">
-            <Mail className="h-12 w-12 opacity-20" />
-            <p>{t('selectEmail')}</p>
-          </div>
-        )}
-      </div>
+      <MessageReader
+        labels={{
+          loading: t('loading'),
+          markUnread: t('markUnread'),
+          markRead: t('markRead'),
+          unstar: t('unstar'),
+          star: t('star'),
+          archive: t('archive'),
+          delete: t('delete'),
+          to: t('to'),
+          cc: t('cc'),
+          htmlView: t('htmlView'),
+          textView: t('textView'),
+          headersView: t('headersView'),
+          attachments: t('attachments'),
+          messageId: t('messageId'),
+          conversationId: t('conversationId'),
+          selectEmail: t('selectEmail'),
+        }}
+        loadingDetail={loadingDetail}
+        activeMessage={activeMessage}
+        activeMessageId={activeMessageId}
+        activeFolderId={activeFolderId}
+        activeMailbox={activeMailbox}
+        activeMethod={activeMethod}
+        capabilities={capabilities}
+        verificationCodes={verificationCodes}
+        copiedCode={copiedCode}
+        viewMode={viewMode}
+        detailSidebarCollapsed={detailSidebarCollapsed}
+        metaPanelCollapsed={metaPanelCollapsed}
+        threadPanelCollapsed={threadPanelCollapsed}
+        metaForm={metaForm}
+        busyAction={busyAction}
+        threadItems={threadItems}
+        onCloseMessage={() => setActiveMessageId('')}
+        onEditDraft={openDraftEditor}
+        onReply={(message) => openCompose('reply', message)}
+        onReplyAll={(message) => openCompose('replyAll', message)}
+        onForward={(message) => openCompose('forward', message)}
+        onToggleRead={(isRead) => void handleSingleStateUpdate('read', isRead)}
+        onToggleFlag={(isFlagged) => void handleSingleStateUpdate('flag', isFlagged)}
+        onArchive={(messageId) => void handleBatchAction('archive', [messageId])}
+        onDelete={() => void handleDeleteActiveMessage()}
+        onCopyVerificationCode={handleCopyVerificationCode}
+        onViewModeChange={setViewMode}
+        onToggleDetailSidebar={() => setDetailSidebarCollapsed((current) => !current)}
+        onToggleMetaPanel={() => setMetaPanelCollapsed((current) => !current)}
+        onToggleThreadPanel={() => setThreadPanelCollapsed((current) => !current)}
+        onMetaFormChange={(patch) => setMetaForm((current) => ({ ...current, ...patch }))}
+        onSaveMeta={() => void handleSaveMeta()}
+        onOpenThreadMessage={(message) => void loadMessageDetail(message.id, message.folderId, message)}
+        onDownloadAttachment={handleDownloadAttachment}
+      />
 
       {compose.open ? (
         <ComposeDrawer
