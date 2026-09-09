@@ -1,9 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { Check, Copy, Languages, LogOut, Monitor, Moon, Settings2, Sun } from 'lucide-react';
+import { Check, Copy, Languages, LogOut, Settings2 } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { useI18n } from '../i18n';
-import { useTheme } from '../theme/useTheme';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { BrandLockup, GitHubLink } from '../components/Brand';
@@ -48,7 +47,6 @@ async function copyToClipboard(text: string) {
 export default function MainLayout() {
   const { isAdmin, authReady, logout, username, accounts, activeMailboxId, folders, activeFolderId } = useAppStore();
   const { t, language, setLanguage } = useI18n();
-  const { theme, setTheme } = useTheme();
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useFeedback();
@@ -219,23 +217,6 @@ export default function MainLayout() {
             title={t('language')}
           >
             <Languages className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => {
-              const nextTheme = theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light';
-              setTheme(nextTheme);
-            }}
-            title={t('theme')}
-          >
-            {theme === 'light' ? (
-              <Sun className="h-4 w-4" />
-            ) : theme === 'dark' ? (
-              <Moon className="h-4 w-4" />
-            ) : (
-              <Monitor className="h-4 w-4" />
-            )}
           </Button>
           <Button variant="ghost" size="sm" onClick={handleLogout}>
             <LogOut className="mr-2 h-4 w-4" />
