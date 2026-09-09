@@ -1,11 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { Check, Copy, Languages, LogOut, Settings2 } from 'lucide-react';
+import { Check, ChevronDown, Copy, Languages, LogOut, Settings2 } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { useI18n } from '../i18n';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
-import { BrandLockup, GitHubLink } from '../components/Brand';
+import { BrandLockup, GitHubMark } from '../components/Brand';
+import { GITHUB_REPO_LABEL, GITHUB_REPO_URL } from '../lib/brand';
 import { useFeedback } from '../components/Feedback';
 import { changeAdminPassword, logout as logoutRequest } from '../lib/api';
 
@@ -45,11 +46,13 @@ async function copyToClipboard(text: string) {
 }
 
 export default function MainLayout() {
-  const { isAdmin, authReady, logout, username, accounts, activeMailboxId, folders, activeFolderId } = useAppStore();
+  const { isAdmin, authReady, logout, username, accounts, activeMailboxId } = useAppStore();
   const { t, language, setLanguage } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useFeedback();
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement | null>(null);
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [passwordForm, setPasswordForm] = useState<PasswordFormState>(DEFAULT_PASSWORD_FORM);
   const [passwordSaving, setPasswordSaving] = useState(false);
@@ -61,14 +64,32 @@ export default function MainLayout() {
     [accounts, activeMailboxId],
   );
   const activeMailboxEmail = activeMailbox?.email ?? '';
-  const activeFolderName = useMemo(
-    () => folders.find((folder) => folder.id === activeFolderId)?.displayName ?? '',
-    [folders, activeFolderId],
-  );
 
   useEffect(() => {
     setCopyState('idle');
   }, [activeMailboxEmail]);
+
+  useEffect(() => {
+    if (!userMenuOpen) {
+      return;
+    }
+    const onPointerDown = (event: MouseEvent) => {
+      if (!userMenuRef.current?.contains(event.target as Node)) {
+        setUserMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setUserMenuOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [userMenuOpen]);
 
   useEffect(() => {
     if (copyState !== 'success') {
@@ -177,51 +198,76 @@ export default function MainLayout() {
             </Button>
           </nav>
         </div>
-        <div className="flex items-center gap-1.5">
-          <GitHubLink className="hidden md:inline-flex" />
-          <div className="hidden text-xs text-white/40 md:block">{username ?? 'admin'}</div>
-          <div className="hidden max-w-[28rem] items-center gap-2 rounded-md border border-white/10 bg-[#0a0a0a] px-3 py-1 text-xs lg:flex">
-            <span className="shrink-0 text-white/40">{t('currentMailbox')}</span>
-            <span className="min-w-0 flex-1 truncate font-medium text-white/90" title={activeMailboxEmail}>
-              {activeMailboxEmail || t('noMailboxSelected')}
-            </span>
-            {activeFolderName ? (
-              <span className="hidden shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-white/60 xl:inline">
-                {activeFolderName}
-              </span>
-            ) : null}
-            {activeMailbox?.preferredMethod || activeMailbox?.method ? (
-              <span className="hidden shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-white/60 xl:inline">
-                {activeMailbox.preferredMethod || activeMailbox.method}
-              </span>
-            ) : null}
+        <div className="flex min-w-0 items-center gap-1">
+          {activeMailboxEmail ? (
             <button
               type="button"
-              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-white/45 transition duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+              className="hidden min-w-0 max-w-[14rem] items-center gap-1.5 rounded-md px-2 py-1 text-xs text-white/70 transition duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] hover:bg-white/5 hover:text-white md:inline-flex"
               onClick={() => void handleCopyMailboxEmail()}
               title={copyState === 'success' ? t('copyMailboxEmailSuccess') : t('copyMailboxEmail')}
-              aria-label={copyState === 'success' ? t('copyMailboxEmailSuccess') : t('copyMailboxEmail')}
-              disabled={!activeMailboxEmail}
             >
-              {copyState === 'success' ? <Check className="h-3.5 w-3.5 text-white" /> : <Copy className="h-3.5 w-3.5" />}
+              <span className="truncate">{activeMailboxEmail}</span>
+              {copyState === 'success' ? <Check className="h-3 w-3 shrink-0" /> : <Copy className="h-3 w-3 shrink-0 opacity-50" />}
             </button>
+          ) : null}
+          <div className="relative" ref={userMenuRef}>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-sm text-white/80 transition duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] hover:bg-white/5 hover:text-white"
+              onClick={() => setUserMenuOpen((open) => !open)}
+              aria-expanded={userMenuOpen}
+            >
+              <span className="max-w-[8rem] truncate">{username ?? 'admin'}</span>
+              <ChevronDown className="h-3.5 w-3.5 text-white/40" />
+            </button>
+            {userMenuOpen ? (
+              <div className="absolute right-0 top-full z-50 mt-1 w-52 overflow-hidden rounded-lg border border-white/10 bg-[#0a0a0a] py-1">
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-white/80 hover:bg-white/5"
+                  onClick={() => {
+                    setUserMenuOpen(false);
+                    openPasswordDialog();
+                  }}
+                >
+                  <Settings2 className="h-3.5 w-3.5" />
+                  {t('changePassword')}
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-white/80 hover:bg-white/5"
+                  onClick={() => {
+                    setLanguage(language === 'en' ? 'zh' : 'en');
+                    setUserMenuOpen(false);
+                  }}
+                >
+                  <Languages className="h-3.5 w-3.5" />
+                  {language === 'en' ? t('chinese') : t('english')}
+                </button>
+                <a
+                  href={GITHUB_REPO_URL}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-sm text-white/80 hover:bg-white/5"
+                  onClick={() => setUserMenuOpen(false)}
+                >
+                  <GitHubMark className="h-3.5 w-3.5" />
+                  {GITHUB_REPO_LABEL}
+                </a>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-white/80 hover:bg-white/5"
+                  onClick={() => {
+                    setUserMenuOpen(false);
+                    void handleLogout();
+                  }}
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                  {t('logout')}
+                </button>
+              </div>
+            ) : null}
           </div>
-          <Button variant="ghost" size="sm" onClick={openPasswordDialog} title={t('changePassword')}>
-            <Settings2 className="mr-2 h-4 w-4" />
-            {t('changePassword')}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setLanguage(language === 'en' ? 'zh' : 'en')}
-            title={t('language')}
-          >
-            <Languages className="h-4 w-4" />
-          </Button>
-          <Button variant="ghost" size="sm" onClick={handleLogout}>
-            <LogOut className="mr-2 h-4 w-4" />
-            {t('logout')}
-          </Button>
         </div>
       </header>
       <main className="flex-1 overflow-hidden">
