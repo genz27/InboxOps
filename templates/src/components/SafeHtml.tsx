@@ -19,17 +19,14 @@ export function SafeHtml({ html, className, minHeight = 280 }: SafeHtmlProps) {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <base target="_blank" rel="noopener noreferrer" />
     <style>
-      :root { color-scheme: light dark; }
+      :root { color-scheme: dark; }
       body {
         margin: 0;
         padding: 12px;
         font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        color: #0f172a;
+        color: #ededed;
         word-break: break-word;
         background: transparent;
-      }
-      @media (prefers-color-scheme: dark) {
-        body { color: #e2e8f0; }
       }
       img, video, iframe { max-width: 100%; height: auto; }
       a { color: #2563eb; }
