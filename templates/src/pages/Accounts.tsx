@@ -536,12 +536,17 @@ export default function Accounts() {
                 </tr>
               ) : (
                 filteredAccounts.map((account) => (
-                  <tr key={account.id} className="transition duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] hover:bg-white/5">
+                  <tr
+                    key={account.id}
+                    className="cursor-pointer transition duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] hover:bg-white/5"
+                    onClick={() => void openEditModal(account)}
+                  >
                     <td className="p-4">
                       <input
                         type="checkbox"
-                        className="rounded border-slate-300"
+                        className="rounded border-white/20"
                         checked={selectedAccountIds.includes(account.id)}
+                        onClick={(event) => event.stopPropagation()}
                         onChange={() => handleToggleAccount(account.id)}
                       />
                     </td>
@@ -576,7 +581,7 @@ export default function Accounts() {
                     </td>
                     <td className="p-4 text-white/45">{account.notes || '-'}</td>
                     <td className="p-4 text-right">
-                      <div className="flex items-center justify-end gap-2">
+                      <div className="flex items-center justify-end gap-2" onClick={(event) => event.stopPropagation()}>
                         <Button variant="ghost" size="sm" onClick={() => void handleBatchTest([account.id])}>
                           {t('testConnection')}
                         </Button>

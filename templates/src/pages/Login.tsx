@@ -14,6 +14,7 @@ export default function Login() {
   const navigate = useNavigate();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -60,6 +61,7 @@ export default function Login() {
                 name="username"
                 autoComplete="username"
                 autoCapitalize="none"
+                autoFocus
                 spellCheck={false}
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
@@ -70,15 +72,25 @@ export default function Login() {
               <label className="text-xs text-white/50" htmlFor="admin-password">
                 {t('password')}
               </label>
-              <Input
-                id="admin-password"
-                type="password"
-                name="password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                required
-              />
+              <div className="relative">
+                <Input
+                  id="admin-password"
+                  type={showPassword ? 'text' : 'password'}
+                  name="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  required
+                  className="pr-16"
+                />
+                <button
+                  type="button"
+                  className="absolute inset-y-0 right-2 text-xs text-white/45 transition duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] hover:text-white"
+                  onClick={() => setShowPassword((current) => !current)}
+                >
+                  {showPassword ? '隐藏' : '显示'}
+                </button>
+              </div>
             </div>
             {error ? <div className="text-sm text-[#ff8080]">{error}</div> : null}
             <Button type="submit" className="w-full" disabled={submitting}>

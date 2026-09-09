@@ -4,6 +4,7 @@ import MainLayout from './layouts/MainLayout';
 import Login from './pages/Login';
 import Workspace from './pages/Workspace';
 import Accounts from './pages/Accounts';
+import { FeedbackProvider } from './components/Feedback';
 import { getAuthMe } from './lib/api';
 import { useAppStore } from './store/useAppStore';
 
@@ -54,7 +55,9 @@ function AuthBootstrap() {
 export default function App() {
   return (
     <BrowserRouter>
-      <AuthBootstrap />
+      <FeedbackProvider>
+        <AuthBootstrap />
+      </FeedbackProvider>
     </BrowserRouter>
   );
 }

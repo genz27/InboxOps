@@ -7,6 +7,7 @@ import { useTheme } from '../theme/useTheme';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { BrandLockup, GitHubLink } from '../components/Brand';
+import { useFeedback } from '../components/Feedback';
 import { changeAdminPassword, logout as logoutRequest } from '../lib/api';
 
 interface PasswordFormState {
@@ -50,6 +51,7 @@ export default function MainLayout() {
   const { theme, setTheme } = useTheme();
   const navigate = useNavigate();
   const location = useLocation();
+  const { toast } = useFeedback();
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [passwordForm, setPasswordForm] = useState<PasswordFormState>(DEFAULT_PASSWORD_FORM);
   const [passwordSaving, setPasswordSaving] = useState(false);
@@ -134,7 +136,7 @@ export default function MainLayout() {
     try {
       await changeAdminPassword(passwordForm);
       closePasswordDialog();
-      window.alert(t('passwordChangeSuccess'));
+      toast(t('passwordChangeSuccess'));
     } catch (requestError) {
       setPasswordError(requestError instanceof Error ? requestError.message : t('passwordChangeFailed'));
     } finally {
@@ -151,13 +153,13 @@ export default function MainLayout() {
       await copyToClipboard(activeMailboxEmail);
       setCopyState('success');
     } catch {
-      window.alert(t('copyMailboxEmailFailed'));
+      toast(t('copyMailboxEmailFailed'), 'error');
     }
   };
 
   return (
     <div className="relative flex h-screen w-full flex-col bg-black text-white">
-      <header className="flex h-12 shrink-0 items-center justify-between border-b border-white/10 px-4">
+      <header className="flex h-14 shrink-0 items-center justify-between border-b border-white/10 px-4">
         <div className="flex items-center gap-4">
           <BrandLockup compact />
           <nav className="ml-2 flex items-center gap-1">
