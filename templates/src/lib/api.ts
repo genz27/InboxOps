@@ -457,11 +457,20 @@ export async function getAuthMe(): Promise<AuthMeResponse> {
   return requestJson<AuthMeResponse>('/api/auth/me');
 }
 
+export async function getCsrfToken(): Promise<string> {
+  const payload = await requestJson<{ csrf_token: string }>('/api/auth/csrf');
+  return payload.csrf_token;
+}
+
 export async function login(payload: { username: string; password: string }): Promise<AuthMeResponse> {
+  const csrfToken = await getCsrfToken();
   return requestJson<AuthMeResponse>('/api/auth/login', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      ...payload,
+      csrf_token: csrfToken,
+    }),
   });
 }
 

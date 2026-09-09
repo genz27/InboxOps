@@ -4,6 +4,7 @@ import MainLayout from './layouts/MainLayout';
 import Login from './pages/Login';
 import Workspace from './pages/Workspace';
 import Accounts from './pages/Accounts';
+import { FeedbackProvider } from './components/Feedback';
 import { getAuthMe } from './lib/api';
 import { useAppStore } from './store/useAppStore';
 
@@ -33,7 +34,7 @@ function AuthBootstrap() {
 
   if (!authReady) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm text-slate-500 dark:bg-slate-950 dark:text-slate-400">
+      <div className="flex min-h-[100dvh] items-center justify-center bg-black text-sm text-white/45">
         正在初始化前端...
       </div>
     );
@@ -54,7 +55,9 @@ function AuthBootstrap() {
 export default function App() {
   return (
     <BrowserRouter>
-      <AuthBootstrap />
+      <FeedbackProvider>
+        <AuthBootstrap />
+      </FeedbackProvider>
     </BrowserRouter>
   );
 }

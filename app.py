@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 from dataclasses import asdict, is_dataclass
+from datetime import timedelta
 from functools import wraps
 from io import StringIO
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any, Callable
 
 from flask import Flask, jsonify, request, send_from_directory, session
 
+from services.login_guard import LoginGuard
 from services.outlook_manager import (
     FlagStateUpdateRequest,
     MailboxConfig,
@@ -126,6 +128,16 @@ def create_app(
     app = Flask(__name__)
     app.config["JSON_AS_ASCII"] = False
     app.config["SECRET_KEY"] = os.getenv("MAIL_ADMIN_SECRET_KEY", "change-me-before-production")
+    app.config["SESSION_COOKIE_NAME"] = "inboxops_session"
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_COOKIE_SECURE"] = os.getenv("MAIL_ADMIN_SESSION_SECURE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=8)
+    login_guard = LoginGuard()
     frontend_dist_dir = Path(app.static_folder or "static") / "frontend"
     frontend_index_file = frontend_dist_dir / "index.html"
 
@@ -159,6 +171,40 @@ def create_app(
 
         return wrapper
 
+    def _client_login_key() -> str:
+        if os.getenv("MAIL_ADMIN_TRUST_PROXY", "").strip().lower() in {"1", "true", "yes"}:
+            forwarded = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+            if forwarded:
+                return forwarded
+        return request.remote_addr or "unknown"
+
+    def _ensure_csrf_token() -> str:
+        token = session.get("csrf_token")
+        if not isinstance(token, str) or len(token) < 16:
+            token = secrets.token_urlsafe(32)
+            session["csrf_token"] = token
+        return token
+
+    def _require_login_csrf(payload: dict[str, Any]) -> None:
+        expected = session.get("csrf_token")
+        provided = payload.get("csrf_token")
+        if (
+            not isinstance(expected, str)
+            or not isinstance(provided, str)
+            or not expected
+            or not hmac.compare_digest(expected, provided)
+        ):
+            raise MailboxError("登录校验失败，请刷新后重试", code="invalid_csrf", status_code=403)
+
+    @app.after_request
+    def add_security_headers(response: Any) -> Any:
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        if request.path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", "no-store")
+        return response
+
     @app.get("/")
     def index() -> str:
         return _serve_frontend_index(frontend_index_file, frontend_dist_dir)
@@ -180,6 +226,10 @@ def create_app(
     def health() -> Any:
         return jsonify({"status": "ok", "service": "inboxops"})
 
+    @app.get("/api/auth/csrf")
+    def auth_csrf() -> Any:
+        return jsonify({"csrf_token": _ensure_csrf_token()})
+
     @app.get("/api/auth/me")
     def auth_me() -> Any:
         authenticated = bool(session.get("admin_authenticated"))
@@ -193,14 +243,23 @@ def create_app(
     @app.post("/api/auth/login")
     def auth_login() -> Any:
         payload = request.get_json(silent=True) or {}
+        _require_login_csrf(payload)
+        client_key = _client_login_key()
+        login_guard.assert_allowed(client_key)
         username = _require_text(payload, "username", "管理员账号不能为空")
         password = _require_text(payload, "password", "管理员密码不能为空")
-
-        if not hmac.compare_digest(username, admin_user) or not _verify_admin_password(password, admin_password_state):
+        user_ok = hmac.compare_digest(username, admin_user)
+        pass_ok = _verify_admin_password(password, admin_password_state)
+        if not user_ok or not pass_ok:
+            login_guard.record_failure(client_key)
             raise MailboxError("管理员账号或密码错误", code="invalid_credentials", status_code=401)
 
+        login_guard.record_success(client_key)
+        session.clear()
+        session.permanent = True
         session["admin_authenticated"] = True
         session["admin_username"] = admin_user
+        session["csrf_token"] = secrets.token_urlsafe(32)
         return jsonify({"authenticated": True, "username": admin_user})
 
     @app.post("/api/auth/logout")

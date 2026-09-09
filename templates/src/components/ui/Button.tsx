@@ -12,18 +12,18 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       <button
         ref={ref}
         className={cn(
-          'inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-slate-950 disabled:pointer-events-none disabled:opacity-50 dark:focus-visible:ring-slate-300',
+          'inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 active:scale-[0.98]',
           {
-            'bg-slate-900 text-slate-50 shadow hover:bg-slate-900/90 dark:bg-slate-50 dark:text-slate-900 dark:hover:bg-slate-50/90': variant === 'default',
-            'bg-red-500 text-slate-50 shadow-sm hover:bg-red-500/90 dark:bg-red-900 dark:text-slate-50 dark:hover:bg-red-900/90': variant === 'destructive',
-            'border border-slate-200 bg-white shadow-sm hover:bg-slate-100 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-800 dark:hover:text-slate-50': variant === 'outline',
-            'bg-slate-100 text-slate-900 shadow-sm hover:bg-slate-100/80 dark:bg-slate-800 dark:text-slate-50 dark:hover:bg-slate-800/80': variant === 'secondary',
-            'hover:bg-slate-100 hover:text-slate-900 dark:hover:bg-slate-800 dark:hover:text-slate-50': variant === 'ghost',
-            'text-slate-900 underline-offset-4 hover:underline dark:text-slate-50': variant === 'link',
-            'h-9 px-4 py-2': size === 'default',
-            'h-8 rounded-md px-3 text-xs': size === 'sm',
+            'bg-white text-black hover:bg-white/90': variant === 'default',
+            'bg-[#ff4d4d] text-white hover:bg-[#ff4d4d]/90': variant === 'destructive',
+            'border border-white/15 bg-transparent text-white hover:bg-white/5': variant === 'outline',
+            'bg-white/10 text-white hover:bg-white/15': variant === 'secondary',
+            'text-white/70 hover:bg-white/5 hover:text-white': variant === 'ghost',
+            'text-white underline-offset-4 hover:underline': variant === 'link',
+            'h-9 px-3.5': size === 'default',
+            'h-8 rounded-md px-2.5 text-xs': size === 'sm',
             'h-10 rounded-md px-8': size === 'lg',
-            'h-9 w-9': size === 'icon',
+            'h-8 w-8': size === 'icon',
           },
           className
         )}

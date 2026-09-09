@@ -35,6 +35,7 @@ import { useI18n } from '../i18n';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Badge } from '../components/ui/Badge';
+import { useFeedback } from '../components/Feedback';
 import { SafeHtml } from '../components/SafeHtml';
 import { cn } from '../lib/utils';
 import {
@@ -262,6 +263,7 @@ function isDraftFolder(email: Email | null, folderId: string) {
 export default function Workspace() {
   const { t } = useI18n();
   const navigate = useNavigate();
+  const { toast, confirm, prompt } = useFeedback();
   const syncAccounts = useAppStore((state) => state.setAccounts);
   const syncActiveMailboxId = useAppStore((state) => state.setActiveMailboxId);
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
@@ -902,7 +904,8 @@ export default function Workspace() {
   }
 
   function updateNotice(message: string) {
-    setNotice(message);
+    toast(message);
+    setNotice('');
     setError('');
   }
 
@@ -1012,8 +1015,8 @@ export default function Workspace() {
           className={cn(
             'group rounded-lg border px-2 py-2 transition-colors',
             activeMailboxId === account.id
-              ? 'border-slate-900 bg-white shadow-sm dark:border-slate-200 dark:bg-slate-950'
-              : 'border-transparent hover:bg-white dark:hover:bg-slate-950',
+              ? 'border-white/20 bg-white/10'
+              : 'border-transparent hover:bg-white/5',
           )}
         >
           <button type="button" onClick={() => selectMailbox(account.id)} className="w-full text-left">
@@ -1097,7 +1100,8 @@ export default function Workspace() {
   }
 
   function updateError(requestError: unknown, fallback: string) {
-    setError(requestError instanceof Error ? requestError.message : fallback);
+    toast(requestError instanceof Error ? requestError.message : fallback, 'error');
+    setError('');
     setNotice('');
   }
 
@@ -1404,7 +1408,7 @@ export default function Workspace() {
     }
     try {
       if (type === 'create') {
-        const name = window.prompt('请输入新文件夹名称');
+        const name = await prompt({ title: '新建文件夹', label: '文件夹名称', confirmLabel: '创建' });
         if (!name) {
           return;
         }
@@ -1412,7 +1416,12 @@ export default function Workspace() {
         updateNotice('文件夹已创建');
       }
       if (type === 'rename' && activeFolder) {
-        const name = window.prompt('请输入新的文件夹名称', activeFolder.displayName);
+        const name = await prompt({
+          title: '重命名文件夹',
+          label: '新名称',
+          defaultValue: activeFolder.displayName,
+          confirmLabel: '保存',
+        });
         if (!name) {
           return;
         }
@@ -1425,7 +1434,13 @@ export default function Workspace() {
         updateNotice('文件夹已重命名');
       }
       if (type === 'delete' && activeFolder) {
-        if (!window.confirm(`确认删除文件夹 ${activeFolder.displayName} 吗？`)) {
+        const ok = await confirm({
+          title: '删除文件夹',
+          body: `确认删除「${activeFolder.displayName}」？文件夹内邮件可能一并受影响。`,
+          confirmLabel: '删除',
+          danger: true,
+        });
+        if (!ok) {
           return;
         }
         await deleteFolder({ mailboxId: activeMailbox.id, method: activeMethod, folderId: activeFolder.id });
@@ -1558,7 +1573,16 @@ export default function Workspace() {
   }
 
   async function handleDeleteRule(ruleId: number) {
-    if (!activeMailbox || !window.confirm('确认删除这条规则吗？')) {
+    if (!activeMailbox) {
+      return;
+    }
+    const ok = await confirm({
+      title: '删除规则',
+      body: '确认删除这条规则？此操作不可恢复。',
+      confirmLabel: '删除',
+      danger: true,
+    });
+    if (!ok) {
       return;
     }
     setBusyAction('rule-delete');
@@ -1752,7 +1776,7 @@ export default function Workspace() {
       );
 
       return (
-    <div className="relative flex h-full w-full overflow-hidden bg-white dark:bg-slate-950">
+    <div className="relative flex h-full w-full overflow-hidden bg-black">
       {/* 桌面侧边栏 */}
       <div className="hidden w-72 shrink-0 overflow-hidden border-r border-slate-200 bg-slate-50/80 dark:border-slate-800 dark:bg-slate-900/50 lg:flex lg:flex-col">
         {mailboxSidebar}
@@ -1874,8 +1898,8 @@ export default function Workspace() {
           </div>
 
           {selectedMessageIds.length > 0 ? (
-            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm dark:border-slate-800 dark:bg-slate-900/50">
-              <span className="mr-2 font-medium">{selectedMessageIds.length} 已选</span>
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-[#0a0a0a] px-3 py-2 text-sm">
+              <span className="mr-2 text-white/70">{selectedMessageIds.length} 已选</span>
               <Button variant="secondary" size="sm" onClick={() => setSelectedMessageIds([])}>
                 <X className="mr-2 h-4 w-4" />
                 {t('clearSelection')}
@@ -1896,33 +1920,42 @@ export default function Workspace() {
                 variant="secondary"
                 size="sm"
                 onClick={() => {
-                  const destinationFolder = window.prompt('请输入目标文件夹 ID');
-                  if (destinationFolder) {
-                    void handleBatchAction('move', selectedMessageIds, destinationFolder);
-                  }
+                  void (async () => {
+                    const destinationFolder = await prompt({
+                      title: '移动到文件夹',
+                      label: '文件夹 ID 或名称',
+                      confirmLabel: '移动',
+                    });
+                    if (destinationFolder) {
+                      await handleBatchAction('move', selectedMessageIds, destinationFolder);
+                    }
+                  })();
                 }}
               >
                 {t('move')}
               </Button>
-              <Button variant="destructive" size="sm" onClick={() => void handleBatchAction('delete', selectedMessageIds)}>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    const ok = await confirm({
+                      title: '删除邮件',
+                      body: `确认删除已选的 ${selectedMessageIds.length} 封邮件？`,
+                      confirmLabel: '删除',
+                      danger: true,
+                    });
+                    if (ok) {
+                      await handleBatchAction('delete', selectedMessageIds);
+                    }
+                  })();
+                }}
+              >
                 {t('delete')}
               </Button>
             </div>
           ) : null}
 
-          {error ? (
-            <div className="flex items-start justify-between gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
-              <span className="min-w-0 flex-1 break-words">{error}</span>
-              <button type="button" className="shrink-0 text-red-400 hover:text-red-600" onClick={() => setError('')} aria-label="关闭错误">
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-          ) : null}
-          {notice ? (
-            <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300">
-              {notice}
-            </div>
-          ) : null}
           {latestJob ? (
             <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
               <span>同步：{latestJob.status}</span>

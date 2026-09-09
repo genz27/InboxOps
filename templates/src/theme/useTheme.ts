@@ -22,7 +22,7 @@ function canUseThemeDom() {
 function resolveTheme(theme: Theme): ResolvedTheme {
   if (theme === 'system') {
     if (!canUseThemeDom()) {
-      return 'light';
+      return 'dark';
     }
     return window.matchMedia(SYSTEM_THEME_QUERY).matches ? 'dark' : 'light';
   }
@@ -45,7 +45,7 @@ function applyTheme(theme: Theme) {
 export const useTheme = create<ThemeState>()(
   persist(
     (set) => ({
-      theme: 'light',
+      theme: 'dark',
       setTheme: (theme) => {
         set({ theme });
         applyTheme(theme);
@@ -53,12 +53,13 @@ export const useTheme = create<ThemeState>()(
     }),
     {
       name: THEME_STORAGE_KEY,
-      version: 2,
+      version: 3,
       migrate: (persistedState) => {
         const state = persistedState as Partial<ThemeState> | undefined;
-        return {
-          theme: state?.theme === 'dark' ? 'dark' : 'light',
-        };
+        if (state?.theme === 'light' || state?.theme === 'dark' || state?.theme === 'system') {
+          return { theme: state.theme };
+        }
+        return { theme: 'dark' };
       },
       onRehydrateStorage: () => (state) => {
         if (state) {

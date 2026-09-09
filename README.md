@@ -44,6 +44,8 @@ python app.py
 - `MAIL_ADMIN_USERNAME`：管理员用户名
 - `MAIL_ADMIN_PASSWORD`：管理员密码
 - `MAIL_ADMIN_SECRET_KEY`：Flask Session 密钥
+- `MAIL_ADMIN_SESSION_SECURE`：设为 `true` 时 Session Cookie 仅走 HTTPS
+- `MAIL_ADMIN_TRUST_PROXY`：设为 `true` 时登录限流信任 `X-Forwarded-For`
 - `INBOXOPS_API_KEY`：项目级访问 Key，用于 `邮箱 + Key` 接口
 
 ## 数据存储

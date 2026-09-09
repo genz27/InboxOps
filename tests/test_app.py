@@ -458,18 +458,65 @@ def test_change_admin_password_updates_login_password_and_persists(tmp_path) -> 
     relogin_app.config["TESTING"] = True
     relogin_client = relogin_app.test_client()
 
+    old_csrf = relogin_client.get("/api/auth/csrf").get_json()["csrf_token"]
     old_password_response = relogin_client.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "admin123456"},
+        json={"username": "admin", "password": "admin123456", "csrf_token": old_csrf},
     )
     assert old_password_response.status_code == 401
 
+    new_csrf = relogin_client.get("/api/auth/csrf").get_json()["csrf_token"]
     new_password_response = relogin_client.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "new-admin-123"},
+        json={"username": "admin", "password": "new-admin-123", "csrf_token": new_csrf},
     )
     assert new_password_response.status_code == 200
     assert new_password_response.get_json() == {"authenticated": True, "username": "admin"}
+
+
+def test_login_requires_csrf_and_sets_security_headers(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    manager = RecordingManager()
+    client = build_client(store, manager, authenticate_admin=False)
+
+    missing = client.post("/api/auth/login", json={"username": "admin", "password": "admin123456"})
+    assert missing.status_code == 403
+    assert missing.get_json()["error"]["code"] == "invalid_csrf"
+
+    csrf = client.get("/api/auth/csrf").get_json()["csrf_token"]
+    health = client.get("/api/health")
+    assert health.headers["X-Frame-Options"] == "DENY"
+    assert health.headers["X-Content-Type-Options"] == "nosniff"
+    assert health.headers["Cache-Control"] == "no-store"
+
+    ok = client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "admin123456", "csrf_token": csrf},
+    )
+    assert ok.status_code == 200
+    assert ok.get_json() == {"authenticated": True, "username": "admin"}
+
+
+def test_login_rate_limit_locks_after_repeated_failures(tmp_path) -> None:
+    store = MailboxStore(tmp_path / "mailboxes.db")
+    manager = RecordingManager()
+    client = build_client(store, manager, authenticate_admin=False)
+
+    for _ in range(5):
+        csrf = client.get("/api/auth/csrf").get_json()["csrf_token"]
+        response = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "wrong-password", "csrf_token": csrf},
+        )
+        assert response.status_code == 401
+
+    csrf = client.get("/api/auth/csrf").get_json()["csrf_token"]
+    locked = client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "admin123456", "csrf_token": csrf},
+    )
+    assert locked.status_code == 429
+    assert locked.get_json()["error"]["code"] == "login_rate_limited"
 
 
 def test_change_admin_password_rejects_invalid_current_password(tmp_path) -> None:
