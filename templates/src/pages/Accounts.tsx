@@ -487,7 +487,7 @@ export default function Accounts() {
                 <th className="w-12 p-4">
                   <input
                     type="checkbox"
-                    className="rounded border-slate-300"
+                    className="rounded border-white/20"
                     checked={
                       filteredAccounts.length > 0 &&
                       filteredAccounts.every((account) => selectedAccountIds.includes(account.id))
@@ -757,7 +757,7 @@ export default function Accounts() {
                   <label className="flex items-end gap-2 pb-1 text-sm text-white/80">
                     <input
                       type="checkbox"
-                      className="rounded border-slate-300"
+                      className="rounded border-white/20"
                       checked={importForm.autoDetectMethod}
                       onChange={(event) =>
                         setImportForm((current) => ({
@@ -836,12 +836,12 @@ export default function Accounts() {
                     <th className="p-3">说明</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                <tbody className="divide-y divide-white/10">
                   {importProbeResults.map((item, index) => (
                     <tr key={`${item.mailbox_id ?? item.email ?? index}`}>
                       <td className="p-3">
                         <div className="font-medium">{item.email || '-'}</div>
-                        <div className="text-xs text-slate-500">{item.label || ''}</div>
+                        <div className="text-xs text-white/45">{item.label || ''}</div>
                       </td>
                       <td className="p-3">
                         {item.success ? (
@@ -852,7 +852,7 @@ export default function Accounts() {
                       </td>
                       <td className="p-3">{item.original_method || '-'}</td>
                       <td className="p-3">{item.preferred_method || '-'}</td>
-                      <td className="max-w-xs break-words p-3 text-xs text-slate-500">{item.message || '-'}</td>
+                      <td className="max-w-xs break-words p-3 text-xs text-white/45">{item.message || '-'}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -17,6 +17,7 @@ import {
   Mail,
   MailOpen,
   Menu,
+  MoreHorizontal,
   Paperclip,
   Pin,
   PinOff,
@@ -294,8 +295,7 @@ export default function Workspace() {
   const [loadingOps, setLoadingOps] = useState(false);
   const [loadingRules, setLoadingRules] = useState(false);
   const [busyAction, setBusyAction] = useState('');
-  const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
+  const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
   const [foldersCollapsed, setFoldersCollapsed] = useState(true);
   const [detailSidebarCollapsed, setDetailSidebarCollapsed] = useState(true);
   const [metaPanelCollapsed, setMetaPanelCollapsed] = useState(false);
@@ -322,6 +322,7 @@ export default function Workspace() {
   const [otpNotifyEnabled, setOtpNotifyEnabledState] = useState(() => isOtpNotifyEnabled());
   const [accountActionBusy, setAccountActionBusy] = useState('');
   const listSearchRef = useRef<HTMLInputElement | null>(null);
+  const toolsMenuRef = useRef<HTMLDivElement | null>(null);
   const seenMessageIdsRef = useRef<Set<string>>(new Set());
   const messagesRequestIdRef = useRef(0);
   const detailRequestIdRef = useRef(0);
@@ -396,18 +397,21 @@ export default function Workspace() {
     syncActiveEmailId(activeMessageId || null);
   }, [activeMessageId, syncActiveEmailId]);
 
-  // 成功提示自动消失，避免长期遮挡列表操作区
   useEffect(() => {
-    if (!notice) {
+    if (!toolsMenuOpen) {
       return;
     }
-    const timerId = window.setTimeout(() => setNotice(''), 3200);
-    return () => window.clearTimeout(timerId);
-  }, [notice]);
+    const onPointerDown = (event: MouseEvent) => {
+      if (!toolsMenuRef.current?.contains(event.target as Node)) {
+        setToolsMenuOpen(false);
+      }
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    return () => window.removeEventListener('pointerdown', onPointerDown);
+  }, [toolsMenuOpen]);
 
   async function loadAccounts() {
     setLoadingAccounts(true);
-    setError('');
     try {
       const items = await listMailboxes();
       setAccounts(items);
@@ -429,7 +433,7 @@ export default function Workspace() {
         setActiveMessage(null);
       }
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : '加载邮箱档案失败');
+      updateError(requestError, '加载邮箱档案失败');
     } finally {
       setLoadingAccounts(false);
     }
@@ -470,7 +474,7 @@ export default function Workspace() {
       if (foldersRequestIdRef.current !== requestId) {
         return;
       }
-      setError(requestError instanceof Error ? requestError.message : '加载文件夹失败');
+      updateError(requestError, '加载文件夹失败');
       setFolders([]);
       setActiveFolderId('');
     } finally {
@@ -492,7 +496,6 @@ export default function Workspace() {
     const silent = options?.silent === true;
     if (!silent) {
       setLoadingMessages(true);
-      setError('');
     }
     try {
       const response = await listMessages({
@@ -563,7 +566,7 @@ export default function Workspace() {
         return;
       }
       if (!silent) {
-        setError(requestError instanceof Error ? requestError.message : '加载邮件失败');
+        updateError(requestError, '加载邮件失败');
         setMessages([]);
         setListMeta(EMPTY_PAGINATION);
       }
@@ -588,7 +591,6 @@ export default function Workspace() {
       setActiveMessage(preview);
     }
     setLoadingDetail(true);
-    setError('');
     try {
       const message = await getMessage({
         mailboxId: requestMailboxId,
@@ -623,7 +625,7 @@ export default function Workspace() {
       if (detailRequestIdRef.current !== requestId) {
         return;
       }
-      setError(requestError instanceof Error ? requestError.message : '加载邮件详情失败');
+      updateError(requestError, '加载邮件详情失败');
     } finally {
       if (detailRequestIdRef.current === requestId) {
         setLoadingDetail(false);
@@ -672,7 +674,7 @@ export default function Workspace() {
     try {
       setRules(await listRules({ mailboxId }));
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : '加载规则失败');
+      updateError(requestError, '加载规则失败');
       setRules([]);
     } finally {
       setLoadingRules(false);
@@ -701,6 +703,10 @@ export default function Workspace() {
         }
         if (opsOpen) {
           setOpsOpen(false);
+          return;
+        }
+        if (toolsMenuOpen) {
+          setToolsMenuOpen(false);
           return;
         }
         if (shortcutsOpen) {
@@ -756,6 +762,10 @@ export default function Workspace() {
         void handleBatchAction('archive', [activeMessage.id]);
         return;
       }
+      if (action === 'delete' && activeMessage) {
+        void handleDeleteActiveMessage();
+        return;
+      }
       if (action === 'nextMessage' || action === 'prevMessage') {
         if (messages.length === 0) {
           return;
@@ -781,6 +791,7 @@ export default function Workspace() {
     searchOpen,
     rulesOpen,
     opsOpen,
+    toolsMenuOpen,
     shortcutsOpen,
     mobileNavOpen,
     activeMessageId,
@@ -903,12 +914,6 @@ export default function Workspace() {
     ]);
   }
 
-  function updateNotice(message: string) {
-    toast(message);
-    setNotice('');
-    setError('');
-  }
-
   async function handleCopyVerificationCode(code: string) {
     try {
       await copyText(code);
@@ -942,7 +947,6 @@ export default function Workspace() {
     setActiveMessageId('');
     setActiveMessage(null);
     setThreadItems([]);
-    setError('');
     setMobileNavOpen(false);
   }
 
@@ -986,7 +990,7 @@ export default function Workspace() {
   function renderMailboxList() {
     if (loadingAccounts) {
       return (
-        <div className="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-slate-500">
+        <div className="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-white/45">
           <LoaderCircle className="h-4 w-4 animate-spin" />
           {t('loading')}
         </div>
@@ -994,14 +998,14 @@ export default function Workspace() {
     }
     if (accounts.length === 0) {
       return (
-        <div className="rounded-md border border-dashed border-slate-200 px-3 py-4 text-sm text-slate-500 dark:border-slate-800">
+        <div className="rounded-md border border-dashed border-white/15 px-3 py-4 text-sm text-white/45">
           暂无邮箱档案
         </div>
       );
     }
     if (filteredAccounts.length === 0) {
       return (
-        <div className="rounded-md border border-dashed border-slate-200 px-3 py-4 text-sm text-slate-500 dark:border-slate-800">
+        <div className="rounded-md border border-dashed border-white/15 px-3 py-4 text-sm text-white/45">
           无匹配邮箱
         </div>
       );
@@ -1026,7 +1030,7 @@ export default function Workspace() {
                   {pinned ? <Pin className="h-3 w-3 shrink-0 text-amber-500" /> : null}
                   <div className="truncate text-sm font-medium">{account.label || account.email}</div>
                 </div>
-                <div className="truncate text-xs text-slate-500">{account.email}</div>
+                <div className="truncate text-xs text-white/45">{account.email}</div>
               </div>
               <div className="flex shrink-0 items-center gap-1.5">
                 {(account.unreadCount ?? 0) > 0 ? (
@@ -1041,12 +1045,12 @@ export default function Workspace() {
                       ? 'bg-emerald-500'
                       : account.status === 'disconnected'
                         ? 'bg-red-500'
-                        : 'bg-slate-300',
+                        : 'bg-white/30',
                   )}
                 />
               </div>
             </div>
-            <div className="mt-1.5 text-[11px] text-slate-500">{methodLabel(account.preferredMethod)}</div>
+            <div className="mt-1.5 text-[11px] text-white/45">{methodLabel(account.preferredMethod)}</div>
           </button>
           <div className="mt-2 hidden flex-wrap gap-1 group-hover:flex">
             <Button
@@ -1101,8 +1105,10 @@ export default function Workspace() {
 
   function updateError(requestError: unknown, fallback: string) {
     toast(requestError instanceof Error ? requestError.message : fallback, 'error');
-    setError('');
-    setNotice('');
+  }
+
+  function updateNotice(message: string) {
+    toast(message);
   }
 
   function updateMessageCollection(nextMessage: Email) {
@@ -1626,11 +1632,11 @@ export default function Workspace() {
             'flex flex-col overflow-hidden p-4',
             foldersCollapsed
               ? 'min-h-0 flex-1'
-              : 'max-h-[45%] min-h-[11rem] shrink-0 border-b border-slate-200 dark:border-slate-800',
+              : 'max-h-[45%] min-h-[11rem] shrink-0 border-b border-white/10',
           )}
         >
           <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">邮箱档案</h2>
+            <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-white/45">邮箱档案</h2>
             <div className="flex items-center gap-1">
               <Button
                 variant="ghost"
@@ -1646,7 +1652,7 @@ export default function Workspace() {
                   }
                 }}
               >
-                <ShieldCheck className={cn('h-3.5 w-3.5', otpNotifyEnabled ? 'text-emerald-500' : 'text-slate-400')} />
+                <ShieldCheck className={cn('h-3.5 w-3.5', otpNotifyEnabled ? 'text-emerald-500' : 'text-white/40')} />
               </Button>
               <Badge variant="outline">
                 {filteredAccounts.length}
@@ -1655,7 +1661,7 @@ export default function Workspace() {
             </div>
           </div>
           <div className="relative mb-2">
-            <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
+            <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-white/40" />
             <Input
               value={mailboxQuery}
               onChange={(event) => setMailboxQuery(event.target.value)}
@@ -1665,7 +1671,7 @@ export default function Workspace() {
             {mailboxQuery ? (
               <button
                 type="button"
-                className="absolute right-2 top-1.5 rounded p-0.5 text-slate-400 hover:text-slate-700"
+                className="absolute right-2 top-1.5 rounded p-0.5 text-white/40 hover:text-white"
                 onClick={() => setMailboxQuery('')}
                 aria-label="清除搜索"
               >
@@ -1679,24 +1685,24 @@ export default function Workspace() {
         <div
           className={cn(
             'flex min-h-0 flex-col overflow-hidden p-4',
-            foldersCollapsed ? 'shrink-0 border-t border-slate-200 dark:border-slate-800' : 'flex-1',
+            foldersCollapsed ? 'shrink-0 border-t border-white/10' : 'flex-1',
           )}
         >
           <div className={cn('flex items-center justify-between gap-2', foldersCollapsed ? 'mb-0' : 'mb-3')}>
             <button
               type="button"
-              className="flex min-w-0 items-center gap-2 rounded-md text-left transition-colors hover:text-slate-900 dark:hover:text-slate-50"
+              className="flex min-w-0 items-center gap-2 rounded-md text-left transition-colors hover:text-white"
               onClick={() => setFoldersCollapsed((current) => !current)}
               aria-expanded={!foldersCollapsed}
               aria-controls="workspace-folders-panel"
             >
               <ChevronRight
                 className={cn(
-                  'h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200',
+                  'h-4 w-4 shrink-0 text-white/40 transition-transform duration-200',
                   !foldersCollapsed && 'rotate-90',
                 )}
               />
-              <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">{t('folders')}</h2>
+              <h2 className="text-sm font-semibold uppercase tracking-[0.24em] text-white/45">{t('folders')}</h2>
             </button>
             <div className="flex items-center gap-1">
               <Button
@@ -1742,7 +1748,7 @@ export default function Workspace() {
             <div className="min-h-0 overflow-hidden">
               <div className="min-h-0 h-full space-y-1 overflow-y-auto pr-1">
                 {loadingFolders ? (
-                  <div className="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-slate-500">
+                  <div className="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-white/45">
                     <LoaderCircle className="h-4 w-4 animate-spin" />
                     {t('loading')}
                   </div>
@@ -1759,8 +1765,8 @@ export default function Workspace() {
                       className={cn(
                         'flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-sm transition-colors',
                         activeFolderId === folder.id
-                          ? 'bg-slate-200 font-medium text-slate-900 dark:bg-slate-800 dark:text-slate-50'
-                          : 'text-slate-600 hover:bg-slate-200/70 dark:text-slate-300 dark:hover:bg-slate-800/70',
+                          ? 'bg-white/10 font-medium text-white'
+                          : 'text-white/70 hover:bg-white/5',
                       )}
                     >
                       <span className="truncate">{folder.displayName}</span>
@@ -1778,7 +1784,7 @@ export default function Workspace() {
       return (
     <div className="relative flex h-full w-full overflow-hidden bg-black">
       {/* 桌面侧边栏 */}
-      <div className="hidden w-72 shrink-0 overflow-hidden border-r border-slate-200 bg-slate-50/80 dark:border-slate-800 dark:bg-slate-900/50 lg:flex lg:flex-col">
+      <div className="hidden w-72 shrink-0 overflow-hidden border-r border-white/10 bg-[#0a0a0a] lg:flex lg:flex-col">
         {mailboxSidebar}
       </div>
 
@@ -1786,8 +1792,8 @@ export default function Workspace() {
       {mobileNavOpen ? (
         <div className="absolute inset-0 z-40 flex lg:hidden">
           <button type="button" className="absolute inset-0 bg-black/40" onClick={() => setMobileNavOpen(false)} aria-label="关闭侧栏" />
-          <div className="relative z-10 flex h-full w-[18rem] max-w-[85vw] flex-col overflow-hidden border-r border-slate-200 bg-slate-50 shadow-xl dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2 dark:border-slate-800">
+          <div className="relative z-10 flex h-full w-[18rem] max-w-[85vw] flex-col overflow-hidden border-r border-white/10 bg-[#0a0a0a] shadow-xl">
+            <div className="flex items-center justify-between border-b border-white/10 px-3 py-2">
               <span className="text-sm font-semibold">邮箱与文件夹</span>
               <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setMobileNavOpen(false)}>
                 <X className="h-4 w-4" />
@@ -1800,17 +1806,17 @@ export default function Workspace() {
 
       <div
         className={cn(
-          'flex w-full shrink-0 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950 md:w-[28rem]',
+          'flex w-full shrink-0 flex-col border-r border-white/10 bg-black md:w-[28rem]',
           activeMessageId ? 'hidden md:flex' : 'flex',
         )}
       >
-        <div className="space-y-3 border-b border-slate-200 p-3 dark:border-slate-800">
+        <div className="space-y-3 border-b border-white/10 p-3">
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" size="icon" className="h-9 w-9 lg:hidden" onClick={() => setMobileNavOpen(true)} title="打开邮箱列表">
               <Menu className="h-4 w-4" />
             </Button>
             <div className="relative min-w-[180px] flex-1">
-              <Search className="absolute left-2.5 top-2 h-4 w-4 text-slate-400" />
+              <Search className="absolute left-2.5 top-2 h-4 w-4 text-white/40" />
               <Input
                 ref={listSearchRef}
                 value={searchQuery}
@@ -1839,56 +1845,100 @@ export default function Workspace() {
             </Button>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1">
             <Button
               variant={filterUnread ? 'secondary' : 'ghost'}
-              size="sm"
+              size="icon"
+              className="h-8 w-8"
+              title={`${t('unread')} (u)`}
               onClick={() => {
                 setFilterUnread((current) => !current);
                 setPage(1);
               }}
             >
-              {t('unread')}
+              <Mail className="h-4 w-4" />
             </Button>
             <Button
               variant={filterStarred ? 'secondary' : 'ghost'}
-              size="sm"
+              size="icon"
+              className="h-8 w-8"
+              title={t('starred')}
               onClick={() => {
                 setFilterStarred((current) => !current);
                 setPage(1);
               }}
             >
-              {t('starred')}
+              <Star className={cn('h-4 w-4', filterStarred && 'fill-amber-400 text-amber-400')} />
             </Button>
             <Button
               variant={filterAttachment ? 'secondary' : 'ghost'}
-              size="sm"
+              size="icon"
+              className="h-8 w-8"
+              title={t('hasAttachment')}
               onClick={() => {
                 setFilterAttachment((current) => !current);
                 setPage(1);
               }}
             >
-              {t('hasAttachment')}
+              <Paperclip className="h-4 w-4" />
             </Button>
             <Button
               variant="ghost"
-              size="sm"
+              size="icon"
+              className="h-8 w-8"
+              title={sortOrder === 'desc' ? t('dateDesc') : t('dateAsc')}
               onClick={() => {
                 setSortOrder((current) => (current === 'desc' ? 'asc' : 'desc'));
                 setPage(1);
               }}
             >
-              {sortOrder === 'desc' ? t('dateDesc') : t('dateAsc')}
+              <Clock className="h-4 w-4" />
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => setSearchOpen(true)}>
-              统一搜索
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => setRulesOpen(true)}>
-              规则
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => setOpsOpen(true)}>
-              同步中心
-            </Button>
+            <div className="relative ml-auto" ref={toolsMenuRef}>
+              <Button
+                variant={toolsMenuOpen ? 'secondary' : 'ghost'}
+                size="icon"
+                className="h-8 w-8"
+                title="更多工具"
+                onClick={() => setToolsMenuOpen((open) => !open)}
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+              {toolsMenuOpen ? (
+                <div className="absolute right-0 top-full z-20 mt-1 w-40 overflow-hidden rounded-lg border border-white/10 bg-[#0a0a0a] py-1">
+                  <button
+                    type="button"
+                    className="flex w-full items-center px-3 py-2 text-left text-sm text-white/80 hover:bg-white/5"
+                    onClick={() => {
+                      setToolsMenuOpen(false);
+                      setSearchOpen(true);
+                    }}
+                  >
+                    统一搜索
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center px-3 py-2 text-left text-sm text-white/80 hover:bg-white/5"
+                    onClick={() => {
+                      setToolsMenuOpen(false);
+                      setRulesOpen(true);
+                    }}
+                  >
+                    规则
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center px-3 py-2 text-left text-sm text-white/80 hover:bg-white/5"
+                    onClick={() => {
+                      setToolsMenuOpen(false);
+                      setOpsOpen(true);
+                    }}
+                  >
+                    同步中心
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
 
           {selectedMessageIds.length > 0 ? (
@@ -1951,7 +2001,7 @@ export default function Workspace() {
           ) : null}
 
           {latestJob ? (
-            <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-white/45">
               <span>同步：{latestJob.status}</span>
               {latestJob.processed_messages != null ? <span>处理 {latestJob.processed_messages} 封</span> : null}
               {latestJob.finished_at ? <span>完成于 {formatMailDate(latestJob.finished_at, 'MM-dd HH:mm')}</span> : null}
@@ -1961,18 +2011,18 @@ export default function Workspace() {
 
         <div className="relative min-h-0 flex-1 overflow-y-auto">
           {loadingMessages && messages.length === 0 ? (
-            <div className="flex h-full items-center justify-center gap-2 text-sm text-slate-500">
+            <div className="flex h-full items-center justify-center gap-2 text-sm text-white/45">
               <LoaderCircle className="h-4 w-4 animate-spin" />
               {t('loading')}
             </div>
           ) : messages.length === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-slate-500">
-              <Mail className="h-8 w-8 text-slate-300" />
+            <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-white/45">
+              <Mail className="h-8 w-8 text-white/35" />
               <div>{t('noEmails')}</div>
               {deferredSearchQuery || filterUnread || filterStarred || filterAttachment ? (
                 <button
                   type="button"
-                  className="text-xs text-slate-700 underline underline-offset-2 dark:text-slate-200"
+                  className="text-xs text-white underline underline-offset-2"
                   onClick={() => {
                     setSearchQuery('');
                     setFilterUnread(false);
@@ -1986,21 +2036,21 @@ export default function Workspace() {
               ) : null}
             </div>
           ) : (
-            <div className={cn('divide-y divide-slate-100 dark:divide-slate-800/70', loadingMessages && 'opacity-60')}>
+            <div className={cn('divide-y divide-white/10', loadingMessages && 'opacity-60')}>
               {messages.map((message) => (
                 <div
                   key={message.id}
                   onClick={() => void loadMessageDetail(message.id, message.folderId, message)}
                   className={cn(
-                    'cursor-pointer px-3 py-3 transition-colors hover:bg-slate-50 dark:hover:bg-slate-900/50',
-                    activeMessageId === message.id && 'bg-slate-100 dark:bg-slate-800/70',
+                    'cursor-pointer px-3 py-3 transition-colors hover:bg-white/5',
+                    activeMessageId === message.id && 'bg-white/10',
                     !message.is_read && 'font-medium',
                   )}
                 >
                   <div className="flex items-start gap-3">
                     <input
                       type="checkbox"
-                      className="mt-1 rounded border-slate-300"
+                      className="mt-1 rounded border-white/20"
                       checked={selectedMessageIds.includes(message.id)}
                       onChange={(event) => {
                         event.stopPropagation();
@@ -2011,16 +2061,16 @@ export default function Workspace() {
                     />
                     <div className="min-w-0 flex-1">
                       <div className="mb-1 flex items-center justify-between gap-3">
-                        <span className="truncate text-sm text-slate-900 dark:text-slate-100">{message.sender}</span>
-                        <span className="shrink-0 text-[11px] text-slate-500">
+                        <span className="truncate text-sm text-white">{message.sender}</span>
+                        <span className="shrink-0 text-[11px] text-white/45">
                           {formatMailDate(message.date, 'MM-dd HH:mm')}
                         </span>
                       </div>
-                      <div className="truncate text-sm text-slate-800 dark:text-slate-200">{message.subject}</div>
-                      <div className="mt-1 line-clamp-2 text-xs text-slate-500 dark:text-slate-400">{message.preview}</div>
+                      <div className="truncate text-sm text-white/85">{message.subject}</div>
+                      <div className="mt-1 line-clamp-2 text-xs text-white/45">{message.preview}</div>
                       <div className="mt-2 flex items-center gap-2">
                         {message.is_flagged ? <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" /> : null}
-                        {message.has_attachments ? <Paperclip className="h-3.5 w-3.5 text-slate-400" /> : null}
+                        {message.has_attachments ? <Paperclip className="h-3.5 w-3.5 text-white/40" /> : null}
                         {message.importance === 'high' ? <AlertCircle className="h-3.5 w-3.5 text-red-500" /> : null}
                         {(message.meta?.tags?.length ?? 0) > 0 ? (
                           <Badge variant="outline" className="max-w-[9rem] truncate">
@@ -2036,11 +2086,11 @@ export default function Workspace() {
           )}
         </div>
 
-        <div className="flex items-center justify-between border-t border-slate-200 px-3 py-2 text-xs text-slate-500 dark:border-slate-800">
+        <div className="flex items-center justify-between border-t border-white/10 px-3 py-2 text-xs text-white/45">
           <label className="flex items-center gap-2">
             <input
               type="checkbox"
-              className="rounded border-slate-300"
+              className="rounded border-white/20"
               checked={allVisibleSelected}
               onChange={(event) => setSelectedMessageIds(event.target.checked ? messages.map((item) => item.id) : [])}
             />
@@ -2076,15 +2126,15 @@ export default function Workspace() {
         </div>
       </div>
 
-      <div className={cn('min-w-0 flex-1 bg-white dark:bg-slate-950', !activeMessageId ? 'hidden md:flex md:flex-col' : 'flex flex-col')}>
+      <div className={cn('min-w-0 flex-1 bg-black', !activeMessageId ? 'hidden md:flex md:flex-col' : 'flex flex-col')}>
         {loadingDetail ? (
-          <div className="flex flex-1 items-center justify-center gap-2 text-sm text-slate-500">
+          <div className="flex flex-1 items-center justify-center gap-2 text-sm text-white/45">
             <LoaderCircle className="h-4 w-4 animate-spin" />
             {t('loading')}
           </div>
         ) : activeMessage ? (
           <>
-            <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
               <div className="flex flex-wrap items-center gap-2">
                 <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setActiveMessageId('')}>
                   <ChevronLeft className="h-4 w-4" />
@@ -2092,84 +2142,105 @@ export default function Workspace() {
                 {isDraftFolder(activeMessage, activeFolderId) ? (
                   <Button
                     variant="outline"
-                    size="sm"
+                    size="icon"
+                    className="h-8 w-8"
                     disabled={!capabilities.canSaveDraft}
                     title={capabilities.canSaveDraft ? '编辑草稿' : capabilities.writeUnsupportedHint}
                     onClick={() => openDraftEditor(activeMessage)}
                   >
-                    编辑草稿
+                    <FilePlus2 className="h-4 w-4" />
                   </Button>
                 ) : null}
                 <Button
                   variant="ghost"
-                  size="sm"
+                  size="icon"
+                  className="h-8 w-8"
                   disabled={!capabilities.canReply}
                   title={capabilities.canReply ? '回复' : capabilities.writeUnsupportedHint}
                   onClick={() => openCompose('reply', activeMessage)}
                 >
-                  <Reply className="mr-2 h-4 w-4" />
-                  回复
+                  <Reply className="h-4 w-4" />
                 </Button>
                 <Button
                   variant="ghost"
-                  size="sm"
+                  size="icon"
+                  className="h-8 w-8"
                   disabled={!capabilities.canReply}
                   title={capabilities.canReply ? '回复全部' : capabilities.writeUnsupportedHint}
                   onClick={() => openCompose('replyAll', activeMessage)}
                 >
-                  <ReplyAll className="mr-2 h-4 w-4" />
-                  回复全部
+                  <ReplyAll className="h-4 w-4" />
                 </Button>
                 <Button
                   variant="ghost"
-                  size="sm"
+                  size="icon"
+                  className="h-8 w-8"
                   disabled={!capabilities.canForward}
                   title={capabilities.canForward ? '转发' : capabilities.writeUnsupportedHint}
                   onClick={() => openCompose('forward', activeMessage)}
                 >
-                  <Forward className="mr-2 h-4 w-4" />
-                  转发
+                  <Forward className="h-4 w-4" />
                 </Button>
-                <Button variant="ghost" size="sm" onClick={() => void handleSingleStateUpdate('read', !activeMessage.is_read)}>
-                  {activeMessage.is_read ? <Mail className="mr-2 h-4 w-4" /> : <MailOpen className="mr-2 h-4 w-4" />}
-                  {activeMessage.is_read ? t('markUnread') : t('markRead')}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  title={activeMessage.is_read ? t('markUnread') : t('markRead')}
+                  onClick={() => void handleSingleStateUpdate('read', !activeMessage.is_read)}
+                >
+                  {activeMessage.is_read ? <Mail className="h-4 w-4" /> : <MailOpen className="h-4 w-4" />}
                 </Button>
-                <Button variant="ghost" size="sm" onClick={() => void handleSingleStateUpdate('flag', !activeMessage.is_flagged)}>
-                  <Star className={cn('mr-2 h-4 w-4', activeMessage.is_flagged && 'fill-amber-400 text-amber-400')} />
-                  {activeMessage.is_flagged ? t('unstar') : t('star')}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  title={activeMessage.is_flagged ? t('unstar') : t('star')}
+                  onClick={() => void handleSingleStateUpdate('flag', !activeMessage.is_flagged)}
+                >
+                  <Star className={cn('h-4 w-4', activeMessage.is_flagged && 'fill-amber-400 text-amber-400')} />
                 </Button>
-                <Button variant="ghost" size="sm" onClick={() => void handleBatchAction('archive', [activeMessage.id])}>
-                  <Archive className="mr-2 h-4 w-4" />
-                  {t('archive')}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  title={`${t('archive')} (e)`}
+                  onClick={() => void handleBatchAction('archive', [activeMessage.id])}
+                >
+                  <Archive className="h-4 w-4" />
                 </Button>
-                <Button variant="destructive" size="sm" onClick={() => void handleDeleteActiveMessage()}>
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  {t('delete')}
+                <Button
+                  variant="destructive"
+                  size="icon"
+                  className="h-8 w-8"
+                  title={`${t('delete')} (Delete)`}
+                  onClick={() => void handleDeleteActiveMessage()}
+                >
+                  <Trash2 className="h-4 w-4" />
                 </Button>
               </div>
-              <div className="text-xs text-slate-500">{methodLabel(activeMethod)}</div>
+              <div className="text-xs text-white/45">{methodLabel(activeMethod)}</div>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
               <div className="mb-6">
                 <div className="mb-2 flex items-start justify-between gap-4">
-                  <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-50">{activeMessage.subject}</h1>
-                  <div className="flex items-center gap-1 text-sm text-slate-500">
+                  <h1 className="text-2xl font-semibold text-white">{activeMessage.subject}</h1>
+                  <div className="flex items-center gap-1 text-sm text-white/45">
                     <Clock className="h-3.5 w-3.5" />
                     {formatMailDate(activeMessage.date)}
                   </div>
                 </div>
-                <div className="space-y-1 text-sm text-slate-600 dark:text-slate-300">
+                <div className="space-y-1 text-sm text-white/70">
                   <div>
                     <span className="font-medium">{activeMessage.sender}</span>
-                    <span className="ml-2 text-slate-400">{activeMessage.mailboxEmail || activeMailbox?.email}</span>
+                    <span className="ml-2 text-white/40">{activeMessage.mailboxEmail || activeMailbox?.email}</span>
                   </div>
                   <div>{t('to')}: {activeMessage.to_recipients.join(', ') || '-'}</div>
                   {activeMessage.cc_recipients.length > 0 ? <div>{t('cc')}: {activeMessage.cc_recipients.join(', ')}</div> : null}
                 </div>
                 {verificationCodes.length > 0 ? (
-                  <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/50 dark:bg-amber-950/30">
-                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-200">
+                  <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-amber-200">
                       检测到验证码
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -2189,7 +2260,7 @@ export default function Workspace() {
                   </div>
                 ) : null}
                 {loadingDetail ? (
-                  <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+                  <div className="mt-3 flex items-center gap-2 text-xs text-white/45">
                     <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
                     正在加载完整正文…
                   </div>
@@ -2197,7 +2268,7 @@ export default function Workspace() {
               </div>
 
               <div className={cn('mb-6 grid gap-4', !detailSidebarCollapsed && 'xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]')}>
-                <div className="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
+                <div className="rounded-xl border border-white/10 p-4">
                   <div className="mb-3 flex items-center justify-between">
                     <h3 className="text-sm font-semibold">消息视图</h3>
                     <div className="flex items-center gap-1">
@@ -2226,20 +2297,20 @@ export default function Workspace() {
                     activeMessage.body_html ? (
                       <SafeHtml html={activeMessage.body_html} minHeight={320} />
                     ) : (
-                      <pre className="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{activeMessage.body_text}</pre>
+                      <pre className="whitespace-pre-wrap text-sm text-white/75">{activeMessage.body_text}</pre>
                     )
                   ) : null}
                   {viewMode === 'text' ? (
-                    <pre className="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{activeMessage.body_text}</pre>
+                    <pre className="whitespace-pre-wrap text-sm text-white/75">{activeMessage.body_text}</pre>
                   ) : null}
                   {viewMode === 'headers' ? (
-                    <pre className="whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-xs text-slate-600 dark:bg-slate-900 dark:text-slate-300">
+                    <pre className="whitespace-pre-wrap rounded-lg bg-white/5 p-3 text-xs text-white/70">
                       {activeMessage.headers || '(无 Headers)'}
                     </pre>
                   ) : null}
 
                   {activeMessage.attachments.length > 0 ? (
-                    <div className="mt-6 border-t border-slate-200 pt-4 dark:border-slate-800">
+                    <div className="mt-6 border-t border-white/10 pt-4">
                       <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold">
                         <Paperclip className="h-4 w-4" />
                         {t('attachments')} ({activeMessage.attachments.length})
@@ -2248,11 +2319,11 @@ export default function Workspace() {
                         {activeMessage.attachments.map((attachment) => (
                           <div
                             key={attachment.id}
-                            className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-800"
+                            className="flex items-center justify-between gap-3 rounded-lg border border-white/10 px-3 py-2"
                           >
                             <div className="min-w-0">
                               <div className="truncate text-sm font-medium">{attachment.name}</div>
-                              <div className="text-xs text-slate-500">{(attachment.size / 1024).toFixed(1)} KB</div>
+                              <div className="text-xs text-white/45">{(attachment.size / 1024).toFixed(1)} KB</div>
                             </div>
                             <Button
                               variant="ghost"
@@ -2272,18 +2343,18 @@ export default function Workspace() {
 
                 {!detailSidebarCollapsed ? (
                 <div className="space-y-4">
-                  <div className="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
+                  <div className="rounded-xl border border-white/10 p-4">
                     <div className={cn('flex items-center justify-between gap-2', metaPanelCollapsed ? 'mb-0' : 'mb-3')}>
                       <button
                         type="button"
-                        className="flex min-w-0 items-center gap-2 rounded-md text-left transition-colors hover:text-slate-900 dark:hover:text-slate-50"
+                        className="flex min-w-0 items-center gap-2 rounded-md text-left transition-colors hover:text-white"
                         onClick={() => setMetaPanelCollapsed((current) => !current)}
                         aria-expanded={!metaPanelCollapsed}
                         aria-controls="workspace-meta-panel"
                       >
                         <ChevronRight
                           className={cn(
-                            'h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200',
+                            'h-4 w-4 shrink-0 text-white/40 transition-transform duration-200',
                             !metaPanelCollapsed && 'rotate-90',
                           )}
                         />
@@ -2301,21 +2372,21 @@ export default function Workspace() {
                       <div className="min-h-0 overflow-hidden">
                         <div className="grid gap-3 pt-1">
                           <div>
-                            <label className="mb-1 block text-xs font-medium text-slate-500">标签</label>
+                            <label className="mb-1 block text-xs font-medium text-white/45">标签</label>
                             <Input value={metaForm.tags} onChange={(event) => setMetaForm((current) => ({ ...current, tags: event.target.value }))} placeholder="vip, follow-up" />
                           </div>
                           <div>
-                            <label className="mb-1 block text-xs font-medium text-slate-500">跟进</label>
+                            <label className="mb-1 block text-xs font-medium text-white/45">跟进</label>
                             <Input value={metaForm.followUp} onChange={(event) => setMetaForm((current) => ({ ...current, followUp: event.target.value }))} placeholder="today / tomorrow / custom" />
                           </div>
                           <div>
-                            <label className="mb-1 block text-xs font-medium text-slate-500">稍后提醒</label>
+                            <label className="mb-1 block text-xs font-medium text-white/45">稍后提醒</label>
                             <Input type="datetime-local" value={metaForm.snoozedUntil} onChange={(event) => setMetaForm((current) => ({ ...current, snoozedUntil: event.target.value }))} />
                           </div>
                           <div>
-                            <label className="mb-1 block text-xs font-medium text-slate-500">状态</label>
+                            <label className="mb-1 block text-xs font-medium text-white/45">状态</label>
                             <select
-                              className="flex h-9 w-full rounded-md border border-slate-200 bg-transparent px-3 text-sm dark:border-slate-800"
+                              className="flex h-9 w-full rounded-md border border-white/10 bg-transparent px-3 text-sm"
                               value={metaForm.status}
                               onChange={(event) => setMetaForm((current) => ({ ...current, status: event.target.value }))}
                             >
@@ -2325,9 +2396,9 @@ export default function Workspace() {
                             </select>
                           </div>
                           <div>
-                            <label className="mb-1 block text-xs font-medium text-slate-500">备注</label>
+                            <label className="mb-1 block text-xs font-medium text-white/45">备注</label>
                             <textarea
-                              className="min-h-28 w-full rounded-md border border-slate-200 bg-transparent px-3 py-2 text-sm shadow-sm dark:border-slate-800"
+                              className="min-h-28 w-full rounded-md border border-white/10 bg-transparent px-3 py-2 text-sm shadow-sm"
                               value={metaForm.notes}
                               onChange={(event) => setMetaForm((current) => ({ ...current, notes: event.target.value }))}
                             />
@@ -2341,18 +2412,18 @@ export default function Workspace() {
                     </div>
                   </div>
 
-                  <div className="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
+                  <div className="rounded-xl border border-white/10 p-4">
                     <div className={cn('flex items-center justify-between gap-2', threadPanelCollapsed ? 'mb-0' : 'mb-3')}>
                       <button
                         type="button"
-                        className="flex min-w-0 items-center gap-2 rounded-md text-left transition-colors hover:text-slate-900 dark:hover:text-slate-50"
+                        className="flex min-w-0 items-center gap-2 rounded-md text-left transition-colors hover:text-white"
                         onClick={() => setThreadPanelCollapsed((current) => !current)}
                         aria-expanded={!threadPanelCollapsed}
                         aria-controls="workspace-thread-panel"
                       >
                         <ChevronRight
                           className={cn(
-                            'h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200',
+                            'h-4 w-4 shrink-0 text-white/40 transition-transform duration-200',
                             !threadPanelCollapsed && 'rotate-90',
                           )}
                         />
@@ -2370,7 +2441,7 @@ export default function Workspace() {
                       <div className="min-h-0 overflow-hidden">
                         <div className="pt-1">
                           {threadItems.length === 0 ? (
-                            <div className="text-sm text-slate-500">当前会话没有已缓存的线程邮件</div>
+                            <div className="text-sm text-white/45">当前会话没有已缓存的线程邮件</div>
                           ) : (
                             <div className="space-y-2">
                               {threadItems.map((item) => (
@@ -2380,12 +2451,12 @@ export default function Workspace() {
                                   className={cn(
                                     'w-full rounded-lg border px-3 py-2 text-left transition-colors',
                                     item.id === activeMessage.id
-                                      ? 'border-slate-900 bg-slate-50 dark:border-slate-200 dark:bg-slate-900'
-                                      : 'border-slate-200 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-900/60',
+                                      ? 'border-white/20 bg-white/10'
+                                      : 'border-white/10 hover:bg-white/5',
                                   )}
                                 >
                                   <div className="truncate text-sm font-medium">{item.subject}</div>
-                                  <div className="mt-1 text-xs text-slate-500">
+                                  <div className="mt-1 text-xs text-white/45">
                                     {item.sender} · {formatMailDate(item.date, 'MM-dd HH:mm')}
                                   </div>
                                 </button>
@@ -2400,7 +2471,7 @@ export default function Workspace() {
                 ) : null}
               </div>
 
-              <div className="rounded-xl border border-slate-200 p-4 text-xs text-slate-500 dark:border-slate-800">
+              <div className="rounded-xl border border-white/10 p-4 text-xs text-white/45">
                 <div className="flex gap-2">
                   <span className="min-w-24 font-medium">{t('messageId')}:</span>
                   <span className="break-all font-mono">{activeMessage.internet_message_id || activeMessage.id}</span>
@@ -2413,7 +2484,7 @@ export default function Workspace() {
             </div>
           </>
         ) : (
-          <div className="flex flex-1 flex-col items-center justify-center gap-4 text-slate-500">
+          <div className="flex flex-1 flex-col items-center justify-center gap-4 text-white/45">
             <Mail className="h-12 w-12 opacity-20" />
             <p>{t('selectEmail')}</p>
           </div>
@@ -2421,15 +2492,15 @@ export default function Workspace() {
       </div>
 
       {compose.open ? (
-        <div className="absolute inset-0 z-50 flex justify-end bg-black/35">
+        <div className="absolute inset-0 z-50 flex justify-end bg-black/70">
           <button type="button" className="h-full flex-1 cursor-default" onClick={() => setCompose(EMPTY_COMPOSE)} aria-label="关闭写信面板" />
-          <div className="flex h-full w-full max-w-xl flex-col border-l border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+          <div className="flex h-full w-full max-w-xl flex-col border-l border-white/10 bg-[#0a0a0a] shadow-2xl">
+            <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
               <div>
                 <h2 className="text-lg font-semibold">
                   {compose.mode === 'new' ? '写信 / 发信' : compose.mode === 'reply' ? '回复' : compose.mode === 'replyAll' ? '回复全部' : '转发'}
                 </h2>
-                <div className="mt-1 text-xs text-slate-500">{activeMailbox?.email || '-'}</div>
+                <div className="mt-1 text-xs text-white/45">{activeMailbox?.email || '-'}</div>
               </div>
               <Button variant="ghost" size="icon" onClick={() => setCompose(EMPTY_COMPOSE)}>
                 <X className="h-4 w-4" />
@@ -2442,11 +2513,11 @@ export default function Workspace() {
                 <Input value={compose.bcc} onChange={(event) => setCompose((current) => ({ ...current, bcc: event.target.value }))} placeholder="Bcc" />
                 <Input value={compose.subject} onChange={(event) => setCompose((current) => ({ ...current, subject: event.target.value }))} placeholder={t('subject')} />
                 <textarea
-                  className="min-h-[16rem] w-full rounded-md border border-slate-200 bg-transparent px-3 py-3 text-sm shadow-sm dark:border-slate-800"
+                  className="min-h-[16rem] w-full rounded-md border border-white/10 bg-transparent px-3 py-3 text-sm shadow-sm"
                   value={compose.bodyText}
                   onChange={(event) => setCompose((current) => ({ ...current, bodyText: event.target.value }))}
                 />
-                <div className="rounded-lg border border-dashed border-slate-300 px-3 py-3 dark:border-slate-700">
+                <div className="rounded-lg border border-dashed border-white/15 px-3 py-3">
                   <div className="mb-2 text-sm font-medium">附件上传</div>
                   <input type="file" multiple onChange={(event) => void handleComposeFiles(event.target.files)} />
                   {compose.attachmentNames.length > 0 ? (
@@ -2473,8 +2544,8 @@ export default function Workspace() {
                 </div>
               </div>
             </div>
-            <div className="flex items-center justify-between gap-3 border-t border-slate-200 px-5 py-4 dark:border-slate-800">
-              <div className="text-xs text-slate-500">侧滑写信面板 · 支持草稿与回复</div>
+            <div className="flex items-center justify-between gap-3 border-t border-white/10 px-5 py-4">
+              <div className="text-xs text-white/45">侧滑写信面板 · 支持草稿与回复</div>
               <div className="flex items-center gap-2">
                 <Button variant="outline" onClick={() => void submitCompose(false)} disabled={compose.submitting}>
                   {compose.submitting ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
@@ -2491,28 +2562,29 @@ export default function Workspace() {
       ) : null}
 
       {shortcutsOpen ? (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6">
-          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-800 dark:bg-slate-900">
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0a0a0a] p-5 shadow-xl">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-semibold">键盘快捷键</h2>
               <Button variant="ghost" size="icon" onClick={() => setShortcutsOpen(false)}>
                 <X className="h-4 w-4" />
               </Button>
             </div>
-            <div className="space-y-2 text-sm text-slate-600 dark:text-slate-300">
+            <div className="space-y-2 text-sm text-white/70">
               {[
                 ['j / k', '下一封 / 上一封'],
                 ['c', '复制验证码'],
                 ['e', '归档当前邮件'],
+                ['Delete', '删除当前邮件'],
                 ['/', '聚焦列表搜索'],
                 ['n', '写新邮件'],
                 ['r', '刷新'],
                 ['u', '切换未读筛选'],
                 ['Esc', '关闭面板 / 返回列表'],
               ].map(([key, desc]) => (
-                <div key={key} className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-800">
+                <div key={key} className="flex items-center justify-between rounded-lg border border-white/10 px-3 py-2">
                   <span>{desc}</span>
-                  <kbd className="rounded bg-slate-100 px-2 py-0.5 font-mono text-xs dark:bg-slate-800">{key}</kbd>
+                  <kbd className="rounded bg-white/10 px-2 py-0.5 font-mono text-xs">{key}</kbd>
                 </div>
               ))}
             </div>
@@ -2521,12 +2593,12 @@ export default function Workspace() {
       ) : null}
 
       {searchOpen ? (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6">
-          <div className="flex max-h-full w-full max-w-5xl flex-col rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6">
+          <div className="flex max-h-full w-full max-w-5xl flex-col rounded-2xl border border-white/10 bg-[#0a0a0a] shadow-xl">
+            <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
               <div>
                 <h2 className="text-lg font-semibold">跨邮箱统一搜索</h2>
-                <div className="mt-1 text-xs text-slate-500">基于本地索引与缓存搜索，适合跨邮箱、标签、备注和会话定位。</div>
+                <div className="mt-1 text-xs text-white/45">基于本地索引与缓存搜索，适合跨邮箱、标签、备注和会话定位。</div>
               </div>
               <Button variant="ghost" size="icon" onClick={() => setSearchOpen(false)}>
                 <X className="h-4 w-4" />
@@ -2546,25 +2618,25 @@ export default function Workspace() {
                   搜索
                 </Button>
               </div>
-              <div className="min-h-[22rem] overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-800">
+              <div className="min-h-[22rem] overflow-y-auto rounded-xl border border-white/10">
                 {globalSearchResults.length === 0 ? (
-                  <div className="flex h-full items-center justify-center px-6 py-12 text-sm text-slate-500">
+                  <div className="flex h-full items-center justify-center px-6 py-12 text-sm text-white/45">
                     {globalSearchLoading ? '正在搜索...' : '暂无搜索结果'}
                   </div>
                 ) : (
-                  <div className="divide-y divide-slate-200 dark:divide-slate-800">
+                  <div className="divide-y divide-white/10">
                     {globalSearchResults.map((item) => (
-                      <button key={`${item.mailboxId}-${item.id}`} onClick={() => jumpToMessage(item)} className="w-full px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-900/60">
+                      <button key={`${item.mailboxId}-${item.id}`} onClick={() => jumpToMessage(item)} className="w-full px-4 py-3 text-left hover:bg-white/5">
                         <div className="flex items-center justify-between gap-3">
                           <div className="min-w-0">
                             <div className="truncate text-sm font-medium">{item.subject}</div>
-                            <div className="mt-1 truncate text-xs text-slate-500">
+                            <div className="mt-1 truncate text-xs text-white/45">
                               {item.mailboxEmail || '-'} · {item.sender} · {item.folderId}
                             </div>
                           </div>
-                          <div className="text-[11px] text-slate-500">{item.date ? format(new Date(item.date), 'MM-dd HH:mm') : '-'}</div>
+                          <div className="text-[11px] text-white/45">{item.date ? format(new Date(item.date), 'MM-dd HH:mm') : '-'}</div>
                         </div>
-                        {item.meta.tags.length > 0 ? <div className="mt-2 text-xs text-slate-500">标签: {item.meta.tags.join(', ')}</div> : null}
+                        {item.meta.tags.length > 0 ? <div className="mt-2 text-xs text-white/45">标签: {item.meta.tags.join(', ')}</div> : null}
                       </button>
                     ))}
                   </div>
@@ -2574,7 +2646,7 @@ export default function Workspace() {
                 <Button variant="ghost" size="sm" disabled={!globalSearchMeta.has_prev} onClick={() => void executeGlobalSearch(Math.max(1, globalSearchMeta.page - 1))}>
                   上一页
                 </Button>
-                <span className="text-xs text-slate-500">
+                <span className="text-xs text-white/45">
                   {globalSearchMeta.page || 1} / {globalSearchMeta.total_pages || 1}
                 </span>
                 <Button variant="ghost" size="sm" disabled={!globalSearchMeta.has_next} onClick={() => void executeGlobalSearch(globalSearchMeta.page + 1)}>
@@ -2587,20 +2659,20 @@ export default function Workspace() {
       ) : null}
 
       {rulesOpen ? (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6">
-          <div className="flex max-h-full w-full max-w-6xl flex-col rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6">
+          <div className="flex max-h-full w-full max-w-6xl flex-col rounded-2xl border border-white/10 bg-[#0a0a0a] shadow-xl">
+            <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
               <div>
                 <h2 className="text-lg font-semibold">规则引擎</h2>
-                <div className="mt-1 text-xs text-slate-500">支持条件匹配、标签追加、标记已读、移动文件夹、跟进与备注追加。</div>
+                <div className="mt-1 text-xs text-white/45">支持条件匹配、标签追加、标记已读、移动文件夹、跟进与备注追加。</div>
               </div>
               <Button variant="ghost" size="icon" onClick={() => setRulesOpen(false)}>
                 <X className="h-4 w-4" />
               </Button>
             </div>
             <div className="grid min-h-0 flex-1 gap-4 overflow-hidden px-5 py-4 lg:grid-cols-[minmax(0,1fr)_minmax(360px,420px)]">
-              <div className="min-h-0 overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-800">
-                <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+              <div className="min-h-0 overflow-y-auto rounded-xl border border-white/10">
+                <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
                   <div className="flex items-center gap-2">
                     <ShieldCheck className="h-4 w-4" />
                     <span className="text-sm font-semibold">已保存规则</span>
@@ -2615,27 +2687,27 @@ export default function Workspace() {
                   </div>
                 </div>
                 {loadingRules ? (
-                  <div className="flex items-center justify-center gap-2 px-4 py-10 text-sm text-slate-500">
+                  <div className="flex items-center justify-center gap-2 px-4 py-10 text-sm text-white/45">
                     <LoaderCircle className="h-4 w-4 animate-spin" />
                     {t('loading')}
                   </div>
                 ) : rules.length === 0 ? (
-                  <div className="px-4 py-10 text-center text-sm text-slate-500">当前邮箱还没有规则</div>
+                  <div className="px-4 py-10 text-center text-sm text-white/45">当前邮箱还没有规则</div>
                 ) : (
                   <div className="space-y-3 p-4">
                     {rules.map((rule) => (
-                      <div key={rule.id} className="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
+                      <div key={rule.id} className="rounded-xl border border-white/10 p-4">
                         <div className="flex items-start justify-between gap-3">
                           <div>
                             <div className="text-sm font-semibold">{rule.name}</div>
-                            <div className="mt-1 text-xs text-slate-500">priority: {rule.priority}</div>
+                            <div className="mt-1 text-xs text-white/45">priority: {rule.priority}</div>
                           </div>
                           <Badge variant={rule.enabled ? 'secondary' : 'outline'}>{rule.enabled ? 'enabled' : 'disabled'}</Badge>
                         </div>
-                        <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-xs text-slate-600 dark:bg-slate-950 dark:text-slate-300">
+                        <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-white/5 p-3 text-xs text-white/70">
                           {JSON.stringify(rule.conditions, null, 2)}
                         </pre>
-                        <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-xs text-slate-600 dark:bg-slate-950 dark:text-slate-300">
+                        <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-white/5 p-3 text-xs text-white/70">
                           {JSON.stringify(rule.actions, null, 2)}
                         </pre>
                         <div className="mt-3 flex flex-wrap gap-2">
@@ -2655,12 +2727,12 @@ export default function Workspace() {
                 )}
               </div>
 
-              <div className="min-h-0 overflow-y-auto rounded-xl border border-slate-200 p-4 dark:border-slate-800">
+              <div className="min-h-0 overflow-y-auto rounded-xl border border-white/10 p-4">
                 <h3 className="mb-4 text-sm font-semibold">{ruleEditor.id ? '编辑规则' : '新建规则'}</h3>
                 <div className="grid gap-3">
                   <Input value={ruleEditor.name} onChange={(event) => setRuleEditor((current) => ({ ...current, name: event.target.value }))} placeholder="规则名称" />
                   <div className="grid grid-cols-[1fr_120px] gap-3">
-                    <label className="flex items-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm dark:border-slate-800">
+                    <label className="flex items-center gap-2 rounded-md border border-white/10 px-3 py-2 text-sm">
                       <input
                         type="checkbox"
                         checked={ruleEditor.enabled}
@@ -2675,17 +2747,17 @@ export default function Workspace() {
                     />
                   </div>
                   <div>
-                    <label className="mb-1 block text-xs font-medium text-slate-500">条件 JSON</label>
+                    <label className="mb-1 block text-xs font-medium text-white/45">条件 JSON</label>
                     <textarea
-                      className="min-h-40 w-full rounded-md border border-slate-200 bg-transparent px-3 py-2 font-mono text-sm shadow-sm dark:border-slate-800"
+                      className="min-h-40 w-full rounded-md border border-white/10 bg-transparent px-3 py-2 font-mono text-sm shadow-sm"
                       value={ruleEditor.conditionsText}
                       onChange={(event) => setRuleEditor((current) => ({ ...current, conditionsText: event.target.value }))}
                     />
                   </div>
                   <div>
-                    <label className="mb-1 block text-xs font-medium text-slate-500">动作 JSON</label>
+                    <label className="mb-1 block text-xs font-medium text-white/45">动作 JSON</label>
                     <textarea
-                      className="min-h-40 w-full rounded-md border border-slate-200 bg-transparent px-3 py-2 font-mono text-sm shadow-sm dark:border-slate-800"
+                      className="min-h-40 w-full rounded-md border border-white/10 bg-transparent px-3 py-2 font-mono text-sm shadow-sm"
                       value={ruleEditor.actionsText}
                       onChange={(event) => setRuleEditor((current) => ({ ...current, actionsText: event.target.value }))}
                     />
@@ -2707,12 +2779,12 @@ export default function Workspace() {
       ) : null}
 
       {opsOpen ? (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6">
-          <div className="flex max-h-full w-full max-w-5xl flex-col rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6">
+          <div className="flex max-h-full w-full max-w-5xl flex-col rounded-2xl border border-white/10 bg-[#0a0a0a] shadow-xl">
+            <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
               <div>
                 <h2 className="text-lg font-semibold">审计日志和同步中心</h2>
-                <div className="mt-1 text-xs text-slate-500">查看同步状态、任务历史和高频后台操作审计。</div>
+                <div className="mt-1 text-xs text-white/45">查看同步状态、任务历史和高频后台操作审计。</div>
               </div>
               <div className="flex items-center gap-2">
                 <Button onClick={() => void handleRunSync()} disabled={busyAction === 'sync'}>
@@ -2725,29 +2797,29 @@ export default function Workspace() {
               </div>
             </div>
             <div className="grid min-h-0 flex-1 gap-4 overflow-hidden px-5 py-4 lg:grid-cols-2">
-              <div className="min-h-0 overflow-y-auto rounded-xl border border-slate-200 p-4 dark:border-slate-800">
+              <div className="min-h-0 overflow-y-auto rounded-xl border border-white/10 p-4">
                 <div className="mb-3 flex items-center justify-between">
                   <h3 className="text-sm font-semibold">同步中心</h3>
                   <Badge variant="outline">{syncStatus?.states.length || 0}</Badge>
                 </div>
                 {loadingOps ? (
-                  <div className="flex items-center gap-2 text-sm text-slate-500">
+                  <div className="flex items-center gap-2 text-sm text-white/45">
                     <LoaderCircle className="h-4 w-4 animate-spin" />
                     {t('loading')}
                   </div>
                 ) : !syncStatus ? (
-                  <div className="text-sm text-slate-500">暂无同步数据</div>
+                  <div className="text-sm text-white/45">暂无同步数据</div>
                 ) : (
                   <div className="space-y-3">
                     {syncStatus.jobs.map((job) => (
-                      <div key={job.id} className="rounded-lg border border-slate-200 p-3 dark:border-slate-800">
+                      <div key={job.id} className="rounded-lg border border-white/10 p-3">
                         <div className="flex items-center justify-between gap-3">
                           <span className="text-sm font-medium">Job #{job.id}</span>
                           <Badge variant={job.status === 'completed' ? 'secondary' : job.status === 'failed' ? 'destructive' : 'outline'}>
                             {job.status}
                           </Badge>
                         </div>
-                        <div className="mt-2 text-xs text-slate-500">
+                        <div className="mt-2 text-xs text-white/45">
                           <div>folders: {job.folders_synced}</div>
                           <div>cached: {job.cached_messages}</div>
                           <div>{job.started_at || '-'}</div>
@@ -2755,14 +2827,14 @@ export default function Workspace() {
                       </div>
                     ))}
                     {syncStatus.states.map((state) => (
-                      <div key={`${state.method}-${state.folder_id}`} className="rounded-lg border border-slate-200 p-3 dark:border-slate-800">
+                      <div key={`${state.method}-${state.folder_id}`} className="rounded-lg border border-white/10 p-3">
                         <div className="flex items-center justify-between gap-3">
                           <span className="text-sm font-medium">{state.folder_id || 'INBOX'}</span>
                           <Badge variant={state.status === 'completed' ? 'secondary' : state.status === 'failed' ? 'destructive' : 'outline'}>
                             {state.status}
                           </Badge>
                         </div>
-                        <div className="mt-2 text-xs text-slate-500">
+                        <div className="mt-2 text-xs text-white/45">
                           <div>{methodLabel(state.method)}</div>
                           <div>cached: {state.cached_messages}</div>
                           <div>{state.last_synced_at || '-'}</div>
@@ -2773,24 +2845,24 @@ export default function Workspace() {
                 )}
               </div>
 
-              <div className="min-h-0 overflow-y-auto rounded-xl border border-slate-200 p-4 dark:border-slate-800">
+              <div className="min-h-0 overflow-y-auto rounded-xl border border-white/10 p-4">
                 <div className="mb-3 flex items-center justify-between">
                   <h3 className="text-sm font-semibold">审计日志</h3>
                   <Badge variant="outline">{auditLogs.length}</Badge>
                 </div>
                 {auditLogs.length === 0 ? (
-                  <div className="text-sm text-slate-500">暂无审计日志</div>
+                  <div className="text-sm text-white/45">暂无审计日志</div>
                 ) : (
                   <div className="space-y-3">
                     {auditLogs.map((item) => (
-                      <div key={item.id} className="rounded-lg border border-slate-200 p-3 dark:border-slate-800">
+                      <div key={item.id} className="rounded-lg border border-white/10 p-3">
                         <div className="flex items-center justify-between gap-3">
                           <div className="text-sm font-medium">{item.action}</div>
                           <Badge variant={item.status === 'success' ? 'secondary' : item.status === 'failed' ? 'destructive' : 'outline'}>
                             {item.status}
                           </Badge>
                         </div>
-                        <div className="mt-2 text-xs text-slate-500">
+                        <div className="mt-2 text-xs text-white/45">
                           <div>{item.target_type} · {item.target_id || '-'}</div>
                           <div>{item.created_at || '-'}</div>
                         </div>

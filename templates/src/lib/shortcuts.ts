@@ -3,6 +3,7 @@ export type ShortcutAction =
   | 'prevMessage'
   | 'copyOtp'
   | 'archive'
+  | 'delete'
   | 'focusSearch'
   | 'compose'
   | 'refresh'
@@ -29,6 +30,7 @@ export function resolveShortcut(event: KeyboardEvent): ShortcutAction | null {
   if (key === 'k') return 'prevMessage';
   if (key === 'c') return 'copyOtp';
   if (key === 'e') return 'archive';
+  if (key === 'delete') return 'delete';
   if (key === '/') return 'focusSearch';
   if (key === 'n') return 'compose';
   if (key === 'r') return 'refresh';
