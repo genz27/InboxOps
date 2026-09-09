@@ -42,8 +42,9 @@ export function BrandLockup({
     <div className={cn('flex items-center gap-2.5', className)}>
       <BrandMark />
       <div className="min-w-0 leading-tight">
-        <div className="truncate text-sm font-medium tracking-tight text-white">{APP_NAME}</div>
-        {compact ? null : <div className="text-[11px] text-white/45">InboxOps</div>}
+        <div className={compact ? 'truncate text-sm font-medium tracking-tight text-white' : 'truncate text-lg font-medium tracking-tight text-white'}>
+          {APP_NAME}
+        </div>
       </div>
     </div>
   );

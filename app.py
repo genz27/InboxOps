@@ -2609,7 +2609,7 @@ def _serve_frontend_index(frontend_index_file: Path, frontend_dist_dir: Path) ->
           <head>
             <meta charset="utf-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1" />
-            <title>Email Outlook</title>
+            <title>InboxOps</title>
             <style>
               body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 40px; color: #0f172a; }
               code { background: #f1f5f9; padding: 2px 6px; border-radius: 6px; }
