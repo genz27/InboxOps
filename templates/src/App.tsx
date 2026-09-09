@@ -33,7 +33,7 @@ function AuthBootstrap() {
 
   if (!authReady) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm text-slate-500 dark:bg-slate-950 dark:text-slate-400">
+      <div className="flex min-h-[100dvh] items-center justify-center bg-black text-sm text-white/45">
         正在初始化前端...
       </div>
     );

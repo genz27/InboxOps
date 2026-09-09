@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
-import { Mail } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { useI18n } from '../i18n';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
+import { BrandLockup, GitHubLink } from '../components/Brand';
+import { APP_NAME } from '../lib/brand';
 import { login as loginRequest } from '../lib/api';
 
 export default function Login() {
@@ -29,47 +30,66 @@ export default function Login() {
       login(payload.username);
       navigate('/');
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : '登录失败');
+      setError(requestError instanceof Error ? requestError.message : t('loginFailed'));
     } finally {
       setSubmitting(false);
     }
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-slate-950">
-      <div className="w-full max-w-md space-y-8 rounded-xl border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex flex-col items-center justify-center space-y-2 text-center">
-          <div className="rounded-full bg-slate-100 p-3 dark:bg-slate-800">
-            <Mail className="h-6 w-6 text-slate-900 dark:text-slate-50" />
-          </div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">
-            {t('adminLogin')}
-          </h1>
+    <div className="relative flex min-h-[100dvh] items-center justify-center bg-black px-4">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.08),transparent_55%)]" />
+      <div className="relative w-full max-w-[380px]">
+        <div className="mb-8 flex flex-col items-center gap-4 text-center">
+          <BrandLockup />
+          <p className="text-sm text-white/50">{t('adminLogin')}</p>
         </div>
-        <form onSubmit={handleLogin} className="space-y-4">
-          <div className="space-y-2">
-            <Input
-              type="text"
-              placeholder={t('username')}
-              value={username}
-              onChange={(event) => setUsername(event.target.value)}
-              required
-            />
-          </div>
-          <div className="space-y-2">
-            <Input
-              type="password"
-              placeholder={t('password')}
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              required
-            />
-          </div>
-          {error ? <div className="text-sm text-red-600 dark:text-red-400">{error}</div> : null}
-          <Button type="submit" className="w-full" disabled={submitting}>
-            {submitting ? '登录中...' : t('login')}
-          </Button>
-        </form>
+        <div className="rounded-xl border border-white/10 bg-[#0a0a0a] p-1.5">
+          <form
+            onSubmit={handleLogin}
+            className="space-y-4 rounded-[10px] border border-white/10 bg-black px-5 py-6"
+            autoComplete="on"
+          >
+            <div className="space-y-2">
+              <label className="text-xs text-white/50" htmlFor="admin-username">
+                {t('username')}
+              </label>
+              <Input
+                id="admin-username"
+                type="text"
+                name="username"
+                autoComplete="username"
+                autoCapitalize="none"
+                spellCheck={false}
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-xs text-white/50" htmlFor="admin-password">
+                {t('password')}
+              </label>
+              <Input
+                id="admin-password"
+                type="password"
+                name="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                required
+              />
+            </div>
+            {error ? <div className="text-sm text-[#ff8080]">{error}</div> : null}
+            <Button type="submit" className="w-full" disabled={submitting}>
+              {submitting ? t('loggingIn') : t('login')}
+            </Button>
+          </form>
+        </div>
+        <div className="mt-6 flex items-center justify-center">
+          <GitHubLink />
+        </div>
+        <p className="mt-3 text-center text-[11px] text-white/30">{APP_NAME}</p>
       </div>
     </div>
   );

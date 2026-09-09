@@ -106,10 +106,19 @@ export default function Accounts() {
     }>
   >([]);
   const [importResultOpen, setImportResultOpen] = useState(false);
+  const [methodFilter, setMethodFilter] = useState<'all' | MethodValue>('all');
+  const [batchMethod, setBatchMethod] = useState<MethodValue>('graph_api');
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 
   const filteredAccounts = useMemo(
     () =>
       accounts.filter((account) => {
+        if (methodFilter !== 'all') {
+          const currentMethod = account.preferredMethod || account.method;
+          if (currentMethod !== methodFilter) {
+            return false;
+          }
+        }
         const needle = searchQuery.trim().toLowerCase();
         if (!needle) {
           return true;
@@ -120,7 +129,7 @@ export default function Accounts() {
           account.notes.toLowerCase().includes(needle)
         );
       }),
-    [accounts, searchQuery],
+    [accounts, searchQuery, methodFilter],
   );
 
   const loadAccounts = async () => {
@@ -139,6 +148,20 @@ export default function Accounts() {
 
   useEffect(() => {
     void loadAccounts();
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+      setEditingAccount(null);
+      setImportDialogOpen(false);
+      setImportResultOpen(false);
+      setConfirmDeleteOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
   const openCreateModal = () => {
@@ -268,6 +291,7 @@ export default function Accounts() {
         await updateMailbox(editingAccount.id, payload);
       }
       setEditingAccount(null);
+      setNotice(editingAccount.mode === 'create' ? t('accountCreated') : t('accountUpdated'));
       await loadAccounts();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : '保存邮箱档案失败');
@@ -280,9 +304,7 @@ export default function Accounts() {
     if (selectedAccountIds.length === 0 || batchBusy) {
       return;
     }
-    if (!window.confirm(`确认删除 ${selectedAccountIds.length} 个邮箱档案吗？`)) {
-      return;
-    }
+    setConfirmDeleteOpen(false);
     setBatchBusy('delete');
     setError('');
     try {
@@ -334,20 +356,10 @@ export default function Accounts() {
     if (selectedAccountIds.length === 0 || batchBusy) {
       return;
     }
-    const nextMethod = window.prompt('请输入新的默认方式：graph_api / imap_new / imap_old', 'graph_api') as
-      | MethodValue
-      | null;
-    if (!nextMethod) {
-      return;
-    }
-    if (!['graph_api', 'imap_new', 'imap_old'].includes(nextMethod)) {
-      setError('接入方式仅支持 graph_api / imap_new / imap_old');
-      return;
-    }
     setBatchBusy('method');
     setError('');
     try {
-      const payload = await batchUpdatePreferredMethod(selectedAccountIds, nextMethod);
+      const payload = await batchUpdatePreferredMethod(selectedAccountIds, batchMethod);
       setNotice(`已切换 ${payload.summary.succeeded} 个档案的默认接入方式。`);
       await loadAccounts();
     } catch (requestError) {
@@ -366,12 +378,13 @@ export default function Accounts() {
   }, [notice]);
 
   return (
-    <div className="relative flex h-full flex-1 flex-col overflow-hidden bg-white p-6 dark:bg-slate-950">
+    <div className="relative flex h-full flex-1 flex-col overflow-hidden bg-black p-6">
       <div className="mb-6 flex shrink-0 items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-50">{t('accounts')}</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            {t('total')}: {accounts.length}
+          <h1 className="text-xl font-medium tracking-tight text-white">{t('accounts')}</h1>
+          <p className="mt-1 text-sm text-white/45">
+            {t('total')}: {filteredAccounts.length}
+            {filteredAccounts.length !== accounts.length ? ` / ${accounts.length}` : ''}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -386,20 +399,34 @@ export default function Accounts() {
         </div>
       </div>
 
-      <div className="mb-4 flex shrink-0 items-center justify-between">
-        <div className="relative w-72">
-          <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
-          <Input
-            placeholder={t('search')}
-            className="pl-9"
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-          />
+      <div className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <div className="relative w-72">
+            <Search className="absolute left-3 top-2.5 h-4 w-4 text-white/35" />
+            <Input
+              placeholder={t('search')}
+              className="pl-9"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+            />
+          </div>
+          <select
+            className="flex h-9 rounded-md border border-white/15 bg-black px-3 text-sm text-white"
+            value={methodFilter}
+            onChange={(event) => setMethodFilter(event.target.value as 'all' | MethodValue)}
+          >
+            <option value="all">{t('allMethods')}</option>
+            {METHOD_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </div>
 
         {selectedAccountIds.length > 0 ? (
-          <div className="flex items-center gap-2 rounded-md bg-slate-100 px-3 py-1.5 dark:bg-slate-800">
-            <span className="mr-2 text-sm font-medium">
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-white/10 bg-[#0a0a0a] px-3 py-1.5">
+            <span className="mr-1 text-sm text-white/70">
               {selectedAccountIds.length} {t('selected')}
             </span>
             <Button variant="secondary" size="sm" onClick={() => setSelectedAccountIds([])}>
@@ -410,11 +437,22 @@ export default function Accounts() {
               <RefreshCw className="mr-2 h-4 w-4" />
               {t('batchTest')}
             </Button>
+            <select
+              className="flex h-8 rounded-md border border-white/15 bg-black px-2 text-xs text-white"
+              value={batchMethod}
+              onChange={(event) => setBatchMethod(event.target.value as MethodValue)}
+            >
+              {METHOD_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
             <Button variant="secondary" size="sm" onClick={() => void handleBatchChangeMethod()}>
               <Settings2 className="mr-2 h-4 w-4" />
               {t('batchChangeMethod')}
             </Button>
-            <Button variant="destructive" size="sm" onClick={() => void handleBatchDelete()}>
+            <Button variant="destructive" size="sm" onClick={() => setConfirmDeleteOpen(true)}>
               <Trash2 className="mr-2 h-4 w-4" />
               {t('batchDelete')}
             </Button>
@@ -423,7 +461,7 @@ export default function Accounts() {
       </div>
 
       {error ? (
-        <div className="mb-4 flex items-start justify-between gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-300">
+        <div className="mb-4 flex items-start justify-between gap-2 rounded-md border border-[#ff4d4d]/30 bg-[#ff4d4d]/10 px-3 py-2 text-sm text-[#ff8080]">
           <span className="min-w-0 flex-1 break-words">{error}</span>
           <button type="button" className="shrink-0 opacity-70 hover:opacity-100" onClick={() => setError('')}>
             <XCircle className="h-4 w-4" />
@@ -431,20 +469,20 @@ export default function Accounts() {
         </div>
       ) : null}
       {notice ? (
-        <div className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-300">
+        <div className="mb-4 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/80">
           {notice}
         </div>
       ) : null}
       {batchBusy ? (
-        <div className="mb-4 text-xs text-slate-500">
+        <div className="mb-4 text-xs text-white/40">
           {batchBusy === 'test' ? '正在测试连接…' : batchBusy === 'delete' ? '正在删除…' : '正在更新…'}
         </div>
       ) : null}
 
-      <div className="flex flex-1 flex-col overflow-hidden rounded-lg border border-slate-200 dark:border-slate-800">
+      <div className="flex flex-1 flex-col overflow-hidden rounded-lg border border-white/10 bg-[#0a0a0a]">
         <div className="flex-1 overflow-auto">
           <table className="w-full text-left text-sm">
-            <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase text-slate-500 dark:border-slate-800 dark:bg-slate-900/50">
+            <thead className="sticky top-0 border-b border-white/10 bg-[#0a0a0a] text-xs uppercase tracking-wide text-white/40">
               <tr>
                 <th className="w-12 p-4">
                   <input
@@ -473,22 +511,32 @@ export default function Accounts() {
                 <th className="p-4 text-right font-medium">{t('actions')}</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+            <tbody className="divide-y divide-white/10">
               {loading ? (
                 <tr>
-                  <td colSpan={6} className="p-8 text-center text-slate-500">
+                  <td colSpan={6} className="p-8 text-center text-white/40">
                     {t('loadingAccounts')}
+                  </td>
+                </tr>
+              ) : accounts.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="p-12 text-center">
+                    <div className="text-sm text-white/70">{t('noAccounts')}</div>
+                    <div className="mt-2 text-xs text-white/40">{t('noAccountsHint')}</div>
+                    <Button className="mt-4" size="sm" onClick={openCreateModal}>
+                      {t('addAccount')}
+                    </Button>
                   </td>
                 </tr>
               ) : filteredAccounts.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="p-8 text-center text-slate-500">
-                    {t('noAccounts')}
+                  <td colSpan={6} className="p-8 text-center text-white/40">
+                    {t('noMatchingAccounts')}
                   </td>
                 </tr>
               ) : (
                 filteredAccounts.map((account) => (
-                  <tr key={account.id} className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-900/50">
+                  <tr key={account.id} className="transition duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] hover:bg-white/5">
                     <td className="p-4">
                       <input
                         type="checkbox"
@@ -498,8 +546,8 @@ export default function Accounts() {
                       />
                     </td>
                     <td className="p-4">
-                      <div className="font-medium text-slate-900 dark:text-slate-100">{account.email}</div>
-                      <div className="text-xs text-slate-500">{account.label}</div>
+                      <div className="font-medium text-white">{account.email}</div>
+                      <div className="text-xs text-white/40">{account.label}</div>
                     </td>
                     <td className="p-4">
                       <Badge variant="outline">{methodLabel(account.method)}</Badge>
@@ -510,23 +558,23 @@ export default function Accounts() {
                           <XCircle className="h-4 w-4 text-red-500" />
                         ) : (
                           <CheckCircle2
-                            className={account.status === 'connected' ? 'h-4 w-4 text-emerald-500' : 'h-4 w-4 text-slate-400'}
+                            className={account.status === 'connected' ? 'h-4 w-4 text-white' : 'h-4 w-4 text-white/30'}
                           />
                         )}
                         <span
                           className={
                             account.status === 'connected'
-                              ? 'text-emerald-600 dark:text-emerald-400'
+                              ? 'text-white'
                               : account.status === 'disconnected'
-                                ? 'text-red-600 dark:text-red-400'
-                                : 'text-slate-500'
+                                ? 'text-[#ff8080]'
+                                : 'text-white/40'
                           }
                         >
                           {t(account.status)}
                         </span>
                       </div>
                     </td>
-                    <td className="p-4 text-slate-500">{account.notes || '-'}</td>
+                    <td className="p-4 text-white/45">{account.notes || '-'}</td>
                     <td className="p-4 text-right">
                       <div className="flex items-center justify-end gap-2">
                         <Button variant="ghost" size="sm" onClick={() => void handleBatchTest([account.id])}>
@@ -546,9 +594,15 @@ export default function Accounts() {
       </div>
 
       {editingAccount ? (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="w-full max-w-xl rounded-xl border border-slate-200 bg-white p-6 shadow-lg dark:border-slate-800 dark:bg-slate-900">
-            <h2 className="mb-4 text-lg font-semibold">
+        <div
+          className="absolute inset-0 z-50 flex items-center justify-center bg-black/70"
+          onClick={() => setEditingAccount(null)}
+        >
+          <div
+            className="w-full max-w-xl rounded-xl border border-white/10 bg-[#0a0a0a] p-6"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 className="mb-4 text-lg font-medium tracking-tight">
               {editingAccount.mode === 'create' ? t('addAccount') : t('editAccount')}
             </h2>
             <form onSubmit={handleSaveAccount} className="space-y-4">
@@ -605,7 +659,7 @@ export default function Accounts() {
                 <div>
                   <label className="mb-1 block text-sm font-medium">{t('defaultMethod')}</label>
                   <select
-                    className="flex h-9 w-full rounded-md border border-slate-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors dark:border-slate-800"
+                    className="flex h-9 w-full rounded-md border border-white/15 bg-black px-3 py-1 text-sm text-white"
                     value={editingAccount.preferredMethod}
                     onChange={(event) =>
                       setEditingAccount((current) =>
@@ -639,7 +693,7 @@ export default function Accounts() {
               <div>
                 <label className="mb-1 block text-sm font-medium">{t('remark')}</label>
                 <textarea
-                  className="min-h-24 w-full rounded-md border border-slate-200 bg-transparent px-3 py-2 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-slate-950 dark:border-slate-800 dark:focus-visible:ring-slate-300"
+                  className="min-h-24 w-full rounded-md border border-white/15 bg-black px-3 py-2 text-sm text-white"
                   value={editingAccount.notes}
                   onChange={(event) =>
                     setEditingAccount((current) => (current ? { ...current, notes: event.target.value } : current))
@@ -660,11 +714,17 @@ export default function Accounts() {
       ) : null}
 
       {importDialogOpen ? (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6">
-          <div className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg dark:border-slate-800 dark:bg-slate-900">
-            <div className="border-b border-slate-200 px-6 py-4 dark:border-slate-800">
-              <h2 className="text-lg font-semibold">{t('importAccounts')}</h2>
-              <p className="mt-1 text-sm text-slate-500">{t('importLineHint')}</p>
+        <div
+          className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6"
+          onClick={closeImportModal}
+        >
+          <div
+            className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-white/10 bg-[#0a0a0a]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="border-b border-white/10 px-6 py-4">
+              <h2 className="text-lg font-medium tracking-tight">{t('importAccounts')}</h2>
+              <p className="mt-1 text-sm text-white/45">{t('importLineHint')}</p>
             </div>
             <form onSubmit={handleImport} className="flex min-h-0 flex-1 flex-col">
               <div className="min-h-0 space-y-4 overflow-y-auto px-6 py-5">
@@ -672,7 +732,7 @@ export default function Accounts() {
                   <div>
                     <label className="mb-1 block text-sm font-medium">{t('defaultMethod')}</label>
                     <select
-                      className="flex h-9 w-full rounded-md border border-slate-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors dark:border-slate-800"
+                      className="flex h-9 w-full rounded-md border border-white/15 bg-black px-3 py-1 text-sm text-white"
                       value={importForm.preferredMethod}
                       onChange={(event) =>
                         setImportForm((current) => ({
@@ -689,7 +749,7 @@ export default function Accounts() {
                       ))}
                     </select>
                   </div>
-                  <label className="flex items-end gap-2 pb-1 text-sm text-slate-700 dark:text-slate-200">
+                  <label className="flex items-end gap-2 pb-1 text-sm text-white/80">
                     <input
                       type="checkbox"
                       className="rounded border-slate-300"
@@ -703,7 +763,7 @@ export default function Accounts() {
                     />
                     <span>
                       导入后自动探测可用接入方式
-                      <span className="mt-0.5 block text-xs text-slate-500">
+                      <span className="mt-0.5 block text-xs text-white/40">
                         顺序：Graph → 新版 IMAP → 旧版 IMAP
                       </span>
                     </span>
@@ -713,7 +773,7 @@ export default function Accounts() {
                 <div>
                   <label className="mb-1 block text-sm font-medium">{t('importPayload')}</label>
                   <textarea
-                    className="min-h-64 w-full rounded-md border border-slate-200 bg-transparent px-3 py-2 font-mono text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-slate-950 dark:border-slate-800 dark:focus-visible:ring-slate-300"
+                    className="min-h-64 w-full rounded-md border border-white/15 bg-black px-3 py-2 font-mono text-sm text-white"
                     value={importForm.rawText}
                     onChange={(event) =>
                       setImportForm((current) => ({
@@ -726,16 +786,16 @@ export default function Accounts() {
                   />
                 </div>
 
-                <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-6 text-slate-500 dark:border-slate-800 dark:bg-slate-950/40">
+                <div className="rounded-lg border border-dashed border-white/15 bg-black px-4 py-3 text-xs leading-6 text-white/45">
                   <div>{t('importSupportedFormats')}</div>
                   <div>{t('importExampleSimple')}</div>
                   <div>{t('importExampleKeyed')}</div>
                 </div>
 
-                {importError ? <div className="text-sm text-red-600 dark:text-red-400">{importError}</div> : null}
+                {importError ? <div className="text-sm text-[#ff8080]">{importError}</div> : null}
               </div>
 
-              <div className="flex justify-end gap-2 border-t border-slate-200 px-6 py-4 dark:border-slate-800">
+              <div className="flex justify-end gap-2 border-t border-white/10 px-6 py-4">
                 <Button type="button" variant="outline" onClick={closeImportModal} disabled={importing}>
                   {t('cancel')}
                 </Button>
@@ -749,12 +809,12 @@ export default function Accounts() {
       ) : null}
 
       {importResultOpen ? (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6">
-          <div className="flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6">
+          <div className="flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-white/10 bg-[#0a0a0a]">
+            <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
               <div>
-                <h2 className="text-lg font-semibold">导入探测明细</h2>
-                <p className="mt-1 text-sm text-slate-500">每个账号的接入方式探测结果与最终采用方式</p>
+                <h2 className="text-lg font-medium tracking-tight">导入探测明细</h2>
+                <p className="mt-1 text-sm text-white/45">每个账号的接入方式探测结果与最终采用方式</p>
               </div>
               <Button variant="outline" size="sm" onClick={() => setImportResultOpen(false)}>
                 关闭
@@ -762,7 +822,7 @@ export default function Accounts() {
             </div>
             <div className="min-h-0 flex-1 overflow-auto">
               <table className="w-full text-left text-sm">
-                <thead className="sticky top-0 border-b border-slate-200 bg-slate-50 text-xs uppercase text-slate-500 dark:border-slate-800 dark:bg-slate-900">
+                <thead className="sticky top-0 border-b border-white/10 bg-[#0a0a0a] text-xs uppercase text-white/40">
                   <tr>
                     <th className="p-3">邮箱</th>
                     <th className="p-3">结果</th>
@@ -792,6 +852,31 @@ export default function Accounts() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {confirmDeleteOpen ? (
+        <div
+          className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 px-4"
+          onClick={() => setConfirmDeleteOpen(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-xl border border-white/10 bg-[#0a0a0a] p-5"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 className="text-base font-medium tracking-tight">{t('batchDelete')}</h2>
+            <p className="mt-2 text-sm text-white/55">
+              {t('confirmDeleteAccounts').replace('{count}', String(selectedAccountIds.length))}
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setConfirmDeleteOpen(false)}>
+                {t('cancel')}
+              </Button>
+              <Button type="button" variant="destructive" onClick={() => void handleBatchDelete()}>
+                {t('batchDelete')}
+              </Button>
             </div>
           </div>
         </div>
